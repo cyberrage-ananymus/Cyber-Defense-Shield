@@ -1056,7 +1056,7 @@ class AdvancedReporter:
         <div class="footer">
             <p><strong>Cyber-Defense-Shield v1.2</strong></p>
             <p>Advanced Cybersecurity Defense Tool</p>
-            <p>Cyber-Rage Security Team © 2024</p>
+            <p>Cyber-Rage Security Team © 2026</p>
             <p>Report generated with advanced security analytics and real-time threat detection</p>
         </div>
     </div>
