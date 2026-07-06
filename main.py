@@ -62,7 +62,7 @@ class CyberDefenseShield:
 ║ ✓ Malware Detection      ✓ User Activity Auditing                 ║
 ║ ✓ Advanced Reporting     ✓ Comprehensive Assessment               ║
 ║                                                                    ║
-║         Cyber-Rage Security Team © 2024                           ║
+║         Cyber-Rage Security Team © 2026                           ║
 ║     MIT License | Open Source | Community Driven                  ║
 ║                                                                    ║
 ╚════════════════════════════════════════════════════════════════════╝
