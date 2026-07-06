@@ -452,7 +452,7 @@ For support and questions:
 - Suspicious-IP detection now requires an actual connection-count signal instead of flagging every remote address seen
 - All of the above thresholds are now configurable in config.py
 
-### v1.0 (2024)
+### v1.0 (2026)
 - Initial release
 - Core security modules
 - DDoS protection
@@ -476,7 +476,7 @@ MIT License - See LICENSE file for details
 
 MIT License
 
-Copyright (c) 2024 Cyber-Rage Security Team
+Copyright (c) 2026 Cyber-Rage Security Team
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
