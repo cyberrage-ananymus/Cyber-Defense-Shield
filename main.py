@@ -98,7 +98,18 @@ class CyberDefenseShield:
     
     def check_root(self):
         """Check if running with root privileges"""
-        if os.geteuid() != 0:
+        try:
+            is_root = os.geteuid() == 0
+        except AttributeError:
+            # os.geteuid() doesn't exist on non-POSIX platforms (e.g. Windows).
+            # This tool relies on Linux-only utilities (ufw, iptables, ss,
+            # auditctl, dpkg, ...) regardless, but we fail gracefully here
+            # instead of crashing with an unhandled AttributeError.
+            print("\n[!] WARNING: Root check is unavailable on this platform.")
+            print("[!] Cyber-Defense-Shield requires a Linux system (Kali/Debian-based) to function.\n")
+            return False
+
+        if not is_root:
             print("\n[!] WARNING: This tool requires root/sudo privileges!")
             print("[!] Some features may not work without root access.")
             print("[*] Run with: sudo python3 main.py\n")
