@@ -47,52 +47,52 @@ class CyberDefenseShield:
     def print_banner(self):
         """Display application banner"""
         banner = """
-╔════════════════════════════════════════════════════════════════════╗
-║                                                                    ║
-║     🛡️  CYBER-DEFENSE-SHIELD v1.2 - Advanced Security Tool 🛡️     ║
-║                                                                    ║
-║         Multi-Layered Cybersecurity Defense System                ║
-║              Kali Linux / Debian-Based Linux                      ║
-║                                                                    ║
-║ ✓ Security Scanning      ✓ Network Monitoring                     ║
-║ ✓ DDoS Protection        ✓ Firewall Management                    ║
-║ ✓ System Hardening       ✓ Log Analysis                           ║
-║ ✓ Threat Detection       ✓ Real-time Monitoring                   ║
-║ ✓ Vulnerability Scanning ✓ Intrusion Detection                    ║
-║ ✓ Malware Detection      ✓ User Activity Auditing                 ║
-║ ✓ Advanced Reporting     ✓ Comprehensive Assessment               ║
-║                                                                    ║
-║         Cyber-Rage Security Team © 2026                           ║
-║     MIT License | Open Source | Community Driven                  ║
-║                                                                    ║
-╚════════════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                                                           ║
+║          🛡️  CYBER-DEFENSE-SHIELD v1.2 - Advanced Security Tool 🛡️        ║
+║                                                                           ║
+║              Multi-Layered Cybersecurity Defense System                   ║
+║                   Kali Linux / Debian-Based Linux                         ║
+║                                                                           ║
+║  ✓ Security Scanning          ✓ Network Monitoring                       ║
+║  ✓ DDoS Protection             ✓ Firewall Management                      ║
+║  ✓ System Hardening            ✓ Log Analysis                             ║
+║  ✓ Threat Detection            ✓ Real-time Monitoring                     ║
+║  ✓ Vulnerability Scanning      ✓ Intrusion Detection                      ║
+║  ✓ Malware Detection           ✓ User Activity Auditing                   ║
+║  ✓ Advanced Reporting          ✓ Comprehensive Assessment                 ║
+║                                                                           ║
+║              Cyber-Rage Security Team © 2026                             ║
+║              MIT License | Open Source | Community Driven                ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
         """
         print(banner)
     
     def print_menu(self):
         """Display main menu"""
         menu = """
-┌────────────────────────────────────────────────────────────────────┐
-│               MAIN MENU - SELECT AN OPTION                         │
-├────────────────────────────────────────────────────────────────────┤
-│                                                                    │
-│  1.  🔍 Full System Security Scan                                  │
-│  2.  🌐 Network Monitoring & Analysis                              │
-│  3.  🚨 DDoS/DoS Protection & Mitigation                           │
-│  4.  🔥 Firewall Management & Configuration                        │
-│  5.  🔐 System Hardening & Security Enhancement                    │
-│  6.  📊 Log Analysis & Threat Detection                            │
-│  7.  ⚡ Real-time Threat Detection & Prevention                    │
-│  8.  📋 Generate Security Report (Basic)                           │
-│  9.  🔎 Vulnerability Scanner                                      │
-│  10. 🛡️ Intrusion Detection System (IDS)                          │
-│  11. 🦠 Malware Detection & Analysis                               │
-│  12. 👤 User Activity Auditing & Monitoring                        │
-│  13. 📈 Advanced Comprehensive Report                              │
-│  14. 🔄 Run All Security Checks (Full Assessment)                  │
-│  15. ❌ Exit Program                                                │
-│                                                                    │
-└────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      MAIN MENU - SELECT AN OPTION                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  1.  🔍 Full System Security Scan                                       │
+│  2.  🌐 Network Monitoring & Analysis                                   │
+│  3.  🚨 DDoS/DoS Protection & Mitigation                                │
+│  4.  🔥 Firewall Management & Configuration                             │
+│  5.  🔐 System Hardening & Security Enhancement                         │
+│  6.  📊 Log Analysis & Threat Detection                                 │
+│  7.  ⚡ Real-time Threat Detection & Prevention                         │
+│  8.  📋 Generate Security Report (Basic)                                │
+│  9.  🔎 Vulnerability Scanner                                           │
+│  10. 🛡️ Intrusion Detection System (IDS)                               │
+│  11. 🦠 Malware Detection & Analysis                                    │
+│  12. 👤 User Activity Auditing & Monitoring                             │
+│  13. 📈 Advanced Comprehensive Report                                   │
+│  14. 🔄 Run All Security Checks (Full Assessment)                       │
+│  15. ❌ Exit Program                                                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
         """
         print(menu)
     
@@ -101,6 +101,10 @@ class CyberDefenseShield:
         try:
             is_root = os.geteuid() == 0
         except AttributeError:
+            # os.geteuid() doesn't exist on non-POSIX platforms (e.g. Windows).
+            # This tool relies on Linux-only utilities (ufw, iptables, ss,
+            # auditctl, dpkg, ...) regardless, but we fail gracefully here
+            # instead of crashing with an unhandled AttributeError.
             print("\n[!] WARNING: Root check is unavailable on this platform.")
             print("[!] Cyber-Defense-Shield requires a Linux system (Kali/Debian-based) to function.\n")
             return False
@@ -366,6 +370,7 @@ class CyberDefenseShield:
         print("\n[*] This will run all security checks...")
         print("[*] This may take several minutes...\n")
         
+        # Run all checks
         self.run_option_1()
         self.run_option_2()
         self.run_option_6()
@@ -374,6 +379,7 @@ class CyberDefenseShield:
         self.run_option_11()
         self.run_option_12()
         
+        # Generate comprehensive report
         print("\n[*] Generating comprehensive report...")
         self.run_option_13()
         
@@ -385,6 +391,7 @@ class CyberDefenseShield:
         """Main application loop"""
         self.print_banner()
         
+        # Check root privileges
         is_root = self.check_root()
         
         while True:
@@ -392,10 +399,6 @@ class CyberDefenseShield:
             
             try:
                 choice = input("\n[*] Enter your choice (1-15): ").strip()
-                
-                if not choice:
-                    print("\n[!] Invalid input. Please enter a valid choice.\n")
-                    continue
                 
                 if choice == '1':
                     self.run_option_1()
@@ -427,17 +430,14 @@ class CyberDefenseShield:
                     self.run_option_14()
                 elif choice == '15':
                     print("\n[*] Exiting Cyber-Defense-Shield...")
-                    print("[+] Stay secure! Shield\n")
+                    print("[+] Stay secure! 🛡️\n")
                     sys.exit(0)
                 else:
                     print("\n[!] Invalid choice! Please enter a number between 1-15.\n")
             
-            except ValueError:
-                print("\n[!] Invalid input. Please enter a valid number.\n")
-                continue
             except KeyboardInterrupt:
                 print("\n\n[*] Interrupted by user...")
-                print("[+] Stay secure! Shield\n")
+                print("[+] Stay secure! 🛡️\n")
                 sys.exit(0)
             except Exception as e:
                 print(f"\n[!] Error: {e}\n")
