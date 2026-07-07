@@ -321,3 +321,34 @@ COMPLIANCE = {
     'hipaa': False,
     'gdpr': False,
 }
+
+# ============================================
+# DAEMON MODE (--daemon flag)
+# ============================================
+# Runs detection checks continuously in the background instead of the
+# interactive menu, on a fixed interval. Daemon mode only monitors and
+# alerts - it deliberately does NOT re-run firewall/hardening changes
+# automatically each cycle, since silently re-applying system changes on
+# a timer is a different (and much riskier) feature than monitoring.
+DAEMON_SCAN_INTERVAL_SECONDS = 300  # seconds between automated check cycles
+
+# ============================================
+# TELEGRAM ALERTS (Optional)
+# ============================================
+# Create a bot via @BotFather to get a bot_token, then message the bot
+# and check https://api.telegram.org/bot<token>/getUpdates to find your
+# chat_id.
+TELEGRAM_CONFIG = {
+    'enabled': False,
+    'bot_token': '',
+    'chat_id': '',
+}
+
+# ============================================
+# DISCORD ALERTS (Optional)
+# ============================================
+# Server Settings -> Integrations -> Webhooks -> New Webhook -> Copy URL.
+DISCORD_CONFIG = {
+    'enabled': False,
+    'webhook_url': '',
+}
