@@ -1,8 +1,8 @@
-# Cyber-Defense-Shield v1.2
+# Cyber-Defense-Shield v1.3
 
 Advanced Cyber Security Defense & Protection Tool for Linux Systems
 
-![Version](https://img.shields.io/badge/version-1.2-blue.svg)
+![Version](https://img.shields.io/badge/version-1.3-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 
@@ -199,6 +199,65 @@ Creates detailed security report:
 Exits the program:
 # Select: 9
 
+## Daemon Mode & Alerts
+
+By default, Cyber-Defense-Shield only runs when you're sitting at the
+interactive menu. For continuous protection on a live server, run it as
+a background daemon instead:
+
+sudo python3 main.py --daemon
+sudo python3 main.py --daemon --interval 60   # custom interval in seconds
+
+**What daemon mode does, on a loop:**
+- IDS checks (port scans, SYN floods, brute-force attempts)
+- Suspicious source IP detection
+- Suspicious process detection
+- Suspicious file scanning
+
+**What daemon mode deliberately does NOT do:** re-apply firewall rules,
+SSH/sudo hardening, or `apt-get upgrade` automatically each cycle. Those
+are mutating changes and stay under manual control via the interactive
+menu - a monitoring loop silently reconfiguring your system on a timer
+is a different, much riskier feature than a monitoring loop that just
+watches and alerts.
+
+### Running as a systemd service
+
+A ready-to-use unit file is included: `cyber-defense-shield.service`.
+
+sudo cp cyber-defense-shield.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cyber-defense-shield
+sudo systemctl status cyber-defense-shield
+journalctl -u cyber-defense-shield -f
+
+Edit the `WorkingDirectory` and `ExecStart` paths in the unit file first
+if you didn't install to `/opt/Cyber-Defense-Shield`.
+
+### Telegram / Discord Alerts
+
+Daemon mode can push findings to Telegram and/or Discord instead of
+only logging locally. Both are optional and off by default. Configure
+either (or both) in `config.py`:
+
+TELEGRAM_CONFIG = {
+    'enabled': True,
+    'bot_token': 'your-bot-token-from-BotFather',
+    'chat_id': 'your-chat-id',
+}
+
+DISCORD_CONFIG = {
+    'enabled': True,
+    'webhook_url': 'https://discord.com/api/webhooks/...',
+}
+
+To get a Telegram `chat_id`: message your bot once, then visit
+`https://api.telegram.org/bot<your-bot-token>/getUpdates` and read the
+`chat.id` field from the response.
+
+If neither is enabled, daemon mode still runs fine - it just logs to
+the console/`LOG_FILE` without pushing anywhere.
+
 ## Configuration
 
 ### Editing Configuration
@@ -225,6 +284,9 @@ EMAIL_CONFIG = {
     'smtp_server': 'smtp.gmail.com',
     ...
 }
+
+# Daemon mode interval (seconds)
+DAEMON_SCAN_INTERVAL_SECONDS = 300
 
 ### Tuning Detection Thresholds
 
@@ -262,17 +324,18 @@ cross-check against your actual logs.
 ## Project Structure
 
 Cyber-Defense-Shield/
-├── main.py                    # Main application entry point
-├── defense_modules.py         # Core security modules
-├── config.py                 # Configuration settings
-├── requirements.txt          # Python dependencies
-├── README.md                 # This file
-└── .gitignore               # Git ignore file
+├── main.py                          # Main application entry point
+├── defense_modules.py               # Core security modules
+├── config.py                        # Configuration settings
+├── requirements.txt                 # Python dependencies
+├── cyber-defense-shield.service     # systemd unit for --daemon mode
+├── README.md                        # This file
+└── .gitignore                       # Git ignore file
 
 ## Module Descriptions
 
 ### main.py
-Main application controller with user interface and menu system.
+Main application controller with user interface, menu system, and daemon mode.
 
 Classes:
 - CyberDefenseShield: Main application class
@@ -281,7 +344,9 @@ Functions:
 - print_banner(): Display application banner
 - print_menu(): Display menu options
 - check_root(): Verify root privileges
-- run(): Main program loop
+- run(): Main interactive program loop
+- run_daemon(): Continuous background loop (detection + alerts only), used by --daemon
+- parse_args(): Parses --daemon / --interval CLI flags
 
 ### defense_modules.py
 Core security modules implementing protection mechanisms.
@@ -295,6 +360,12 @@ Classes:
 - LogAnalyzer: Log analysis and threat detection
 - RealtimeThreatDetector: Real-time monitoring
 - ReportGenerator: Report generation
+- VulnerabilityScanner: Known vulnerability / outdated package checks
+- IntrusionDetectionSystem: Per-source IDS (port scan, SYN flood, brute force)
+- MalwareDetector: Suspicious file / process detection
+- UserActivityAuditor: Login and privilege escalation auditing
+- AdvancedReporter: Comprehensive HTML reporting
+- AlertNotifier: Sends findings to Telegram/Discord (used by --daemon)
 
 ### config.py
 Configuration settings for all protection mechanisms.
@@ -307,6 +378,8 @@ Settings:
 - System hardening options
 - Attack pattern signatures
 - Alert thresholds
+- Daemon mode interval
+- Telegram / Discord alert credentials
 - Compliance settings
 
 ## Threat Protection Capabilities
@@ -444,6 +517,16 @@ For support and questions:
 
 ## Changelog
 
+### v1.3 (2026)
+- Added `--daemon` mode: runs detection continuously in the background instead of only via the interactive menu, on a configurable interval (see cyber-defense-shield.service for systemd deployment)
+- Added optional Telegram and Discord alerts, sent automatically when daemon mode finds something actionable (both off by default, stdlib-only, no new dependency)
+- Daemon mode intentionally only runs detection checks (IDS, suspicious IPs/processes/files) - it does not re-apply firewall/SSH/sudo hardening or run system updates automatically on a timer
+- SSH hardening is now idempotent (marker-guarded) and takes a one-time backup of the original sshd_config, validated with `sshd -t` before being applied
+- iptables rate-limiting rules are now checked with `iptables -C` before being added, preventing duplicate rules on repeated runs, and are persisted across reboots via netfilter-persistent/iptables-save
+- Sudo hardening, incoming-traffic monitoring, syslog analysis, and attack-pattern detection now perform real checks instead of placeholder output
+- Security reports now reflect live system state (firewall/SSH/ports/suspicious IPs) instead of a static checklist
+- Removed unused dependencies from requirements.txt (now only psutil, which is actually used)
+
 ### v1.2 (2026)
 - Rate limiting is now enforced per source IP (iptables hashlimit) instead of one shared global limit, so concurrent legitimate users no longer exhaust each other's allowance
 - SYN flood protection now also raises the SYN backlog size, giving legitimate traffic bursts more headroom before syncookies kick in
@@ -514,7 +597,7 @@ Special thanks to:
 
 ---
 
-Version: 1.2
+Version: 1.3
 Last Updated: 2026
 Status: Active Development & Maintenance
 Maintained By: Cyber-Rage Security Team
