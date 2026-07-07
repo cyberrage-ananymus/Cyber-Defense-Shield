@@ -1,0 +1,19 @@
+[Unit]
+Description=Cyber-Defense-Shield - Continuous Security Monitoring
+After=network.target
+
+[Service]
+Type=simple
+# Adjust this path to wherever the project actually lives on your server.
+WorkingDirectory=/opt/Cyber-Defense-Shield
+ExecStart=/usr/bin/python3 /opt/Cyber-Defense-Shield/main.py --daemon
+Restart=on-failure
+RestartSec=10
+
+# Detection needs root for ss/ufw/auditctl/etc. If you lock this down
+# further with a dedicated user, several checks will silently report
+# "Requires root access" instead of failing outright.
+User=root
+
+[Install]
+WantedBy=multi-user.target
