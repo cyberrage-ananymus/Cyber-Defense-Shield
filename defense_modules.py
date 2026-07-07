@@ -243,8 +243,41 @@ class DDosProtector:
                 print(f"[+] Rate Limiting: ENABLED per-source ({rate}/minute, burst {burst}) on ports: {', '.join(enabled_ports)}")
             if already_active:
                 print(f"[+] Rate Limiting: Already active on ports: {', '.join(already_active)} (no duplicate rule added)")
+            if enabled_ports:
+                self._persist_iptables_rules()
         else:
             print("[!] Rate Limiting: Requires root access")
+
+    @staticmethod
+    def _persist_iptables_rules():
+        """Persist current iptables rules across reboots.
+
+        Without this, rules added by enable_rate_limiting only live in the
+        kernel's in-memory ruleset and silently disappear on the next
+        reboot, giving a false sense of protection. Tries
+        netfilter-persistent first (the standard Debian/Kali mechanism);
+        falls back to writing iptables-save output directly if that tool
+        isn't installed.
+        """
+        try:
+            result = subprocess.run(['netfilter-persistent', 'save'], capture_output=True, text=True)
+            if result.returncode == 0:
+                print("[+] Rate Limiting: Rules persisted via netfilter-persistent")
+                return
+        except FileNotFoundError:
+            pass
+
+        try:
+            os.makedirs('/etc/iptables', exist_ok=True)
+            save = subprocess.run(['iptables-save'], capture_output=True, text=True)
+            if save.returncode == 0:
+                with open('/etc/iptables/rules.v4', 'w') as f:
+                    f.write(save.stdout)
+                print("[+] Rate Limiting: Rules persisted to /etc/iptables/rules.v4")
+            else:
+                print("[!] Rate Limiting: Could not persist rules (iptables-save failed)")
+        except Exception as e:
+            print(f"[!] Rate Limiting: Could not persist rules ({e})")
     
     def enable_syn_flood_protection(self):
         """Enable SYN flood protection.
@@ -351,8 +384,25 @@ class FirewallManager:
         print(f"[+] Dangerous Ports Closed: {len(dangerous_ports)}")
     
     def enable_incoming_monitoring(self):
-        """Enable incoming traffic monitoring"""
-        print("[+] Incoming Traffic Monitoring: ENABLED")
+        """Enable incoming traffic monitoring.
+
+        Previously a no-op that only printed "ENABLED" without checking
+        anything. Now takes an actual snapshot of listening ports and
+        current incoming (established) connections via `ss`, so the
+        message reflects something real about the system's exposure.
+        """
+        try:
+            listening = subprocess.run(['ss', '-tuln'], capture_output=True, text=True)
+            listen_count = max(listening.stdout.count('\n') - 1, 0)
+
+            established = subprocess.run(['ss', '-tn', 'state', 'established'], capture_output=True, text=True)
+            incoming_count = max(established.stdout.count('\n') - 1, 0)
+
+            print(f"[+] Incoming Traffic Monitoring: ENABLED")
+            print(f"    - Listening sockets: {listen_count}")
+            print(f"    - Active incoming connections: {incoming_count}")
+        except Exception as e:
+            print(f"[!] Incoming Traffic Monitoring: {e}")
 
 
 class SystemHardener:
@@ -443,8 +493,42 @@ Protocol 2
         print(f"[+] Unnecessary Services Disabled: {len(services)}")
     
     def harden_sudo(self):
-        """Harden sudo configuration"""
-        print("[+] Sudo Hardening: COMPLETE")
+        """Harden sudo configuration.
+
+        Previously a no-op that only printed "COMPLETE". Now writes actual
+        hardening directives to a dedicated file under /etc/sudoers.d/
+        (never edits /etc/sudoers directly - a syntax error there can lock
+        out sudo entirely on the next login). The new file is validated
+        with `visudo -c` before being kept; if it fails validation, it is
+        removed rather than left in place.
+        """
+        sudoers_path = '/etc/sudoers.d/99-cyberdefense-shield'
+        sudo_config = """# Managed by Cyber-Defense-Shield - do not edit by hand
+Defaults use_pty
+Defaults logfile="/var/log/sudo.log"
+Defaults passwd_tries=3
+Defaults timestamp_timeout=5
+"""
+        try:
+            if os.path.exists(sudoers_path):
+                print("[+] Sudo Hardening: Already applied (skipping)")
+                return
+
+            with open(sudoers_path, 'w') as f:
+                f.write(sudo_config)
+            os.chmod(sudoers_path, 0o440)
+
+            check = subprocess.run(['visudo', '-c', '-f', sudoers_path], capture_output=True, text=True)
+            if check.returncode != 0:
+                os.remove(sudoers_path)
+                print(f"[!] Sudo Hardening: Invalid config rejected ({check.stderr.strip()})")
+                return
+
+            print("[+] Sudo Hardening: COMPLETE")
+        except PermissionError:
+            print("[!] Sudo Hardening: Requires root access")
+        except Exception as e:
+            print(f"[!] Sudo Hardening: {e}")
     
     def enable_audit_logging(self):
         """Enable audit logging"""
@@ -558,18 +642,77 @@ class RealtimeThreatDetector:
 class ReportGenerator:
     """Report Generation Module"""
     
+    def __init__(self):
+        self.data = {}
+        self.findings = []
+    
     def collect_data(self):
-        """Collect system data"""
-        pass
+        """Collect live system data to feed into the report.
+
+        Previously a no-op (`pass`). Now actually gathers real signal by
+        reusing the existing scanner/monitor classes, instead of the report
+        always describing the same static, hardcoded checklist regardless
+        of the system's real state.
+        """
+        scanner = SecurityScanner()
+        monitor = NetworkMonitor()
+
+        self.data = {
+            'open_ports': scanner.scan_open_ports(),
+            'suspicious_processes': scanner.check_suspicious_processes(),
+            'firewall_active': scanner.check_firewall(),
+            'ssh_secure': scanner.check_ssh_security(),
+            'established_connections': monitor.analyze_traffic(),
+            'suspicious_ips': monitor.detect_suspicious_ips(),
+        }
+        return self.data
     
     def analyze(self):
-        """Analyze collected data"""
-        pass
+        """Turn collected data into human-readable findings.
+
+        Previously a no-op (`pass`). Now produces a real list of
+        success/warning findings based on self.data, used by
+        generate_html_report instead of a static hardcoded list.
+        """
+        if not self.data:
+            self.collect_data()
+
+        findings = []
+
+        findings.append(('success' if self.data['firewall_active'] else 'danger',
+                          f"Firewall is {'ACTIVE' if self.data['firewall_active'] else 'INACTIVE'}"))
+
+        findings.append(('success' if self.data['ssh_secure'] else 'warning',
+                          f"SSH configuration is {'hardened' if self.data['ssh_secure'] else 'not fully hardened'}"))
+
+        port_count = len(self.data['open_ports'])
+        findings.append(('success', f"{port_count} listening port(s) detected"))
+
+        if self.data['suspicious_processes']:
+            findings.append(('warning', f"{len(self.data['suspicious_processes'])} potentially suspicious process(es) found"))
+        else:
+            findings.append(('success', "No suspicious processes detected"))
+
+        if self.data['suspicious_ips']:
+            findings.append(('warning', f"{len(self.data['suspicious_ips'])} suspicious source IP(s) detected"))
+        else:
+            findings.append(('success', "No suspicious source IPs detected"))
+
+        self.findings = findings
+        return findings
     
     def generate_html_report(self):
         """Generate HTML security report"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"/tmp/cyber_defense_report_{timestamp}.html"
+
+        self.collect_data()
+        self.analyze()
+
+        findings_html = "\n".join(
+            f'            <li><span class="{css_class}">[{"+" if css_class == "success" else "!"}]</span> {text}</li>'
+            for css_class, text in self.findings
+        )
         
         html_content = f"""
 <!DOCTYPE html>
@@ -605,12 +748,7 @@ class ReportGenerator:
     <div class="section">
         <h2>Security Assessment Results</h2>
         <ul>
-            <li><span class="success">[+]</span> Full system security scan completed</li>
-            <li><span class="success">[+]</span> Network monitoring active</li>
-            <li><span class="success">[+]</span> DDoS protection enabled</li>
-            <li><span class="success">[+]</span> Firewall configuration verified</li>
-            <li><span class="success">[+]</span> System hardening applied</li>
-            <li><span class="warning">[!]</span> Recommendations available for further enhancement</li>
+{findings_html}
         </ul>
     </div>
     
