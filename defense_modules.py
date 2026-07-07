@@ -18,6 +18,11 @@ try:
 except Exception:
     _config = None
 
+try:
+    import psutil
+except Exception:
+    psutil = None
+
 
 def _cfg(name, default):
     """Read a tunable setting from config.py, falling back to a safe default
@@ -143,7 +148,7 @@ class NetworkMonitor:
         Flags a source IP only once its concurrent connection count crosses
         a configurable threshold, instead of flagging every remote IP seen
         in the connection table. The previous approach labeled 100% of
-        normal traffic as suspicious - every real visitor, DNS resolver,
+        normal traffic as "suspicious" - every real visitor, DNS resolver,
         or package mirror is a remote IP - which produced constant false
         positives with no actual signal behind them. A high connection
         count from a single source is a much better (though still not
@@ -161,7 +166,7 @@ class NetworkMonitor:
 
                 ip_matches = re.findall(r'\d+\.\d+\.\d+\.\d+(?=:\d+)', line)
                 if len(ip_matches) < 2:
-                    continue
+                    continue  # no distinct peer address on this line (e.g. a LISTEN socket)
 
                 peer_ip = ip_matches[-1]
                 connection_counts[peer_ip] = connection_counts.get(peer_ip, 0) + 1
@@ -196,31 +201,48 @@ class DDosProtector:
         since the "right" rate depends entirely on a given system's actual
         traffic - there is no single default that avoids false positives
         on every deployment.
+
+        Idempotent by design: each rule is checked with `iptables -C`
+        before being added with `-A`. Without this check, re-running this
+        (e.g. via option 3 more than once, or option 14's full assessment)
+        would append a duplicate hashlimit rule per port every time,
+        multiplying the actual effective throttling on the system.
         """
         rate = _cfg('RATE_LIMIT_PER_MINUTE', 25)
         burst = _cfg('RATE_LIMIT_BURST', 100)
         ports = _cfg('RATE_LIMITED_PORTS', [80, 443])
 
         enabled_ports = []
+        already_active = []
         for port in ports:
+            rule_spec = [
+                '-p', 'tcp', '--dport', str(port),
+                '-m', 'conntrack', '--ctstate', 'NEW',
+                '-m', 'hashlimit',
+                '--hashlimit-name', f'ddos_port_{port}',
+                '--hashlimit-mode', 'srcip',
+                '--hashlimit-above', f'{rate}/minute',
+                '--hashlimit-burst', str(burst),
+                '-j', 'DROP'
+            ]
             try:
-                result = subprocess.run([
-                    'iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', str(port),
-                    '-m', 'conntrack', '--ctstate', 'NEW',
-                    '-m', 'hashlimit',
-                    '--hashlimit-name', f'ddos_port_{port}',
-                    '--hashlimit-mode', 'srcip',
-                    '--hashlimit-above', f'{rate}/minute',
-                    '--hashlimit-burst', str(burst),
-                    '-j', 'DROP'
-                ], capture_output=True)
+                # -C (check) returns 0 if an identical rule already exists.
+                check = subprocess.run(['iptables', '-C', 'INPUT'] + rule_spec, capture_output=True)
+                if check.returncode == 0:
+                    already_active.append(str(port))
+                    continue
+
+                result = subprocess.run(['iptables', '-A', 'INPUT'] + rule_spec, capture_output=True)
                 if result.returncode == 0:
                     enabled_ports.append(str(port))
             except Exception:
                 pass
 
-        if enabled_ports:
-            print(f"[+] Rate Limiting: ENABLED per-source ({rate}/minute, burst {burst}) on ports: {', '.join(enabled_ports)}")
+        if enabled_ports or already_active:
+            if enabled_ports:
+                print(f"[+] Rate Limiting: ENABLED per-source ({rate}/minute, burst {burst}) on ports: {', '.join(enabled_ports)}")
+            if already_active:
+                print(f"[+] Rate Limiting: Already active on ports: {', '.join(already_active)} (no duplicate rule added)")
         else:
             print("[!] Rate Limiting: Requires root access")
     
@@ -251,9 +273,41 @@ class DDosProtector:
             print(f"[!] UDP Flood Protection: Requires root access")
     
     def monitor_traffic_anomalies(self):
-        """Monitor for traffic anomalies"""
+        """Monitor for traffic anomalies.
+
+        Takes two samples of system-wide network I/O one second apart and
+        flags a spike if the throughput between samples exceeds a
+        configurable rate. This was previously a no-op that always
+        returned an empty list regardless of actual traffic; it now does
+        a real (if still basic) check using psutil counters.
+        """
         print("[*] Monitoring traffic anomalies...")
-        return []
+        anomalies = []
+
+        if psutil is None:
+            print("[!] Traffic Anomaly Check: psutil not installed, skipping")
+            return anomalies
+
+        threshold_mbps = _cfg('TRAFFIC_ANOMALY_THRESHOLD_MBPS', 50)
+
+        try:
+            import time
+            before = psutil.net_io_counters()
+            time.sleep(1)
+            after = psutil.net_io_counters()
+
+            bytes_per_sec = (after.bytes_recv - before.bytes_recv) + (after.bytes_sent - before.bytes_sent)
+            mbps = (bytes_per_sec * 8) / 1_000_000
+
+            if mbps > threshold_mbps:
+                anomalies.append(f"Traffic spike detected: {mbps:.1f} Mbps (threshold: {threshold_mbps} Mbps)")
+                print(f"[!] ALERT: {mbps:.1f} Mbps of combined traffic (threshold: {threshold_mbps} Mbps)")
+            else:
+                print(f"[+] Traffic within normal range ({mbps:.1f} Mbps, threshold: {threshold_mbps} Mbps)")
+        except Exception as e:
+            print(f"[!] Error monitoring traffic: {e}")
+
+        return anomalies
 
 
 class FirewallManager:
@@ -262,7 +316,7 @@ class FirewallManager:
     def enable_firewall(self):
         """Enable firewall"""
         try:
-            subprocess.run(['ufw', 'enable'], capture_output=True, input=b'y\n')
+            subprocess.run(['ufw', 'enable'], input=b'y\n', capture_output=True)
             print("[+] UFW Firewall: ENABLED")
         except Exception as e:
             print(f"[!] Firewall: {e}")
@@ -305,8 +359,18 @@ class SystemHardener:
     """System Hardening Module"""
     
     def harden_ssh(self):
-        """Harden SSH configuration"""
-        ssh_config = """
+        """Harden SSH configuration.
+
+        Idempotent by design: the block below is guarded by a marker
+        comment, so re-running this (e.g. via option 14's full assessment)
+        does not keep appending duplicate/conflicting directives to
+        sshd_config every time. A backup of the pre-hardening config is
+        also kept, taken only once, so the original can be restored if the
+        new settings ever lock someone out.
+        """
+        marker = "# --- Cyber-Defense-Shield hardening (do not duplicate) ---"
+        ssh_config = f"""
+{marker}
 Port 22
 PermitRootLogin no
 PasswordAuthentication no
@@ -317,13 +381,45 @@ ClientAliveInterval 300
 ClientAliveCountMax 2
 Protocol 2
 """
+        config_path = '/etc/ssh/sshd_config'
+        backup_path = '/etc/ssh/sshd_config.cyberdefense-shield.bak'
+
         try:
-            with open('/etc/ssh/sshd_config', 'a') as f:
+            with open(config_path, 'r') as f:
+                content = f.read()
+
+            if marker in content:
+                print("[+] SSH Hardening: Already applied (skipping duplicate write)")
+                return
+
+            # Keep exactly one backup of the pre-hardening state, taken
+            # only the first time this ever runs on the system.
+            if not os.path.exists(backup_path):
+                with open(backup_path, 'w') as bf:
+                    bf.write(content)
+                print(f"[+] SSH Backup: Saved original config to {backup_path}")
+
+            with open(config_path, 'a') as f:
                 f.write(ssh_config)
+
+            test = subprocess.run(['sshd', '-t'], capture_output=True, text=True)
+            if test.returncode != 0:
+                # New config is invalid - restore the backup immediately
+                # rather than leaving a broken sshd_config in place.
+                with open(backup_path, 'r') as bf:
+                    original = bf.read()
+                with open(config_path, 'w') as f:
+                    f.write(original)
+                print(f"[!] SSH Hardening: New config failed validation, restored backup.")
+                print(f"[!] sshd -t said: {test.stderr.strip()}")
+                return
+
             subprocess.run(['systemctl', 'restart', 'ssh'], capture_output=True)
             print("[+] SSH Hardening: COMPLETE")
+        except FileNotFoundError:
+            print(f"[!] SSH Hardening: {config_path} not found")
         except Exception as e:
-            print(f"[!] SSH Hardening: Requires root access")
+            print(f"[!] SSH Hardening: Requires root access ({e})")
     
     def update_system(self):
         """Update system packages"""
@@ -375,14 +471,71 @@ class LogAnalyzer:
             return 0
     
     def analyze_syslog(self):
-        """Analyze system logs"""
-        print("[+] Syslog Analysis: COMPLETE")
-        return 0
+        """Analyze system logs for error/warning-level entries.
+
+        Previously a no-op that only printed "COMPLETE" without reading
+        any log. Now actually greps /var/log/syslog (falling back to
+        journalctl on systems where that file doesn't exist, e.g. pure
+        systemd-journal setups) for error/warning/critical entries.
+        """
+        try:
+            result = subprocess.run(
+                ['grep', '-iE', 'error|warning|critical', '/var/log/syslog'],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 or result.stdout:
+                count = result.stdout.count('\n')
+                print(f"[+] Syslog Analysis: {count} error/warning/critical entries found")
+                return count
+        except FileNotFoundError:
+            pass
+
+        try:
+            result = subprocess.run(
+                ['journalctl', '-p', 'warning', '--no-pager', '--since', '1 hour ago'],
+                capture_output=True, text=True, timeout=10
+            )
+            count = result.stdout.count('\n')
+            print(f"[+] Syslog Analysis (journalctl, last hour): {count} warning+ entries found")
+            return count
+        except Exception as e:
+            print(f"[!] Syslog Analysis: {e}")
+            return 0
     
     def detect_attack_patterns(self):
-        """Detect attack patterns in logs"""
-        print("[+] Attack Pattern Detection: COMPLETE")
-        return 0
+        """Detect known attack signature phrases in auth logs.
+
+        Previously a no-op. Now scans /var/log/auth.log for well-known
+        sshd/PAM attack signature strings and reports counts per pattern,
+        rather than just claiming completion with no actual signal.
+        """
+        patterns = {
+            'Invalid user': 'Login attempts for non-existent users',
+            'authentication failure': 'PAM authentication failures',
+            'POSSIBLE BREAK-IN ATTEMPT': 'Reverse-DNS mismatch on connecting host',
+            'Did not receive identification string': 'Connections dropped before SSH handshake (scanner-like)',
+        }
+
+        findings = []
+        try:
+            result = subprocess.run(['cat', '/var/log/auth.log'], capture_output=True, text=True)
+            log_data = result.stdout
+        except Exception as e:
+            print(f"[!] Attack Pattern Detection: {e}")
+            return findings
+
+        for pattern, description in patterns.items():
+            count = log_data.count(pattern)
+            if count > 0:
+                findings.append(f"{pattern}: {count} occurrences ({description})")
+                print(f"[!] Pattern '{pattern}': {count} occurrences - {description}")
+
+        if not findings:
+            print("[+] Attack Pattern Detection: No known attack signatures found")
+        else:
+            print(f"[+] Attack Pattern Detection: {len(findings)} pattern type(s) matched")
+
+        return findings
 
 
 class RealtimeThreatDetector:
@@ -492,7 +645,7 @@ class ReportGenerator:
 
 
 class VulnerabilityScanner:
-    """Vulnerability Scanner Module - Detects known vulnerabilities"""
+    """NEW: Vulnerability Scanner Module - Detects known vulnerabilities"""
     
     def __init__(self):
         self.vulnerabilities = []
@@ -503,6 +656,7 @@ class VulnerabilityScanner:
         
         vulnerabilities = []
         
+        # Check for outdated packages
         try:
             result = subprocess.run(['apt', 'list', '--upgradable'], capture_output=True, text=True)
             upgradable = result.stdout.count('\n')
@@ -512,9 +666,13 @@ class VulnerabilityScanner:
         except:
             pass
         
+        # Check for weak SSL/TLS
         print("[*] Checking SSL/TLS configuration...")
+        
+        # Check for open dangerous ports
         print("[*] Scanning for dangerous port configurations...")
         
+        # Check for weak permissions
         try:
             result = subprocess.run(['find', '/home', '-perm', '-002', '-type', 'f'], 
                                   capture_output=True, text=True, timeout=5)
@@ -541,7 +699,7 @@ class VulnerabilityScanner:
 
 
 class IntrusionDetectionSystem:
-    """Intrusion Detection System (IDS) - Detects attack patterns"""
+    """NEW: Intrusion Detection System (IDS) - Detects attack patterns"""
     
     def __init__(self):
         self.attack_patterns = {
@@ -567,6 +725,10 @@ class IntrusionDetectionSystem:
         
         threats = []
         
+        # Check for port scanning / SYN flood activity, grouped by source IP.
+        # Grouping by source lets us tell "one attacker hammering us" apart
+        # from "many normal clients connecting at once", which a single
+        # system-wide counter cannot do.
         try:
             result = subprocess.run(['ss', '-tan'], capture_output=True, text=True)
             syn_recv_by_source = {}
@@ -608,6 +770,9 @@ class IntrusionDetectionSystem:
         except Exception as e:
             print(f"[!] Error analyzing connections: {e}")
         
+        # Check for brute force attempts within a recent time window rather
+        # than the entire log history, so old, isolated failures do not
+        # produce a standing "attack in progress" alert indefinitely.
         print("[*] Checking for brute force attacks...")
         try:
             window = _cfg('BRUTE_FORCE_WINDOW_MINUTES', 10)
@@ -634,6 +799,7 @@ class IntrusionDetectionSystem:
         try:
             result = subprocess.run(['netstat', '-an'], capture_output=True, text=True)
             
+            # Check for connections from suspicious countries/IPs
             for line in result.stdout.split('\n'):
                 if 'ESTABLISHED' in line:
                     if re.search(r'0\.0\.0\.0|255\.255', line):
@@ -646,8 +812,8 @@ class IntrusionDetectionSystem:
     
     @staticmethod
     def _extract_ip(address_port):
-        """Extract the IP portion from an ss-style address:port token,
-        handling both IPv4 (1.2.3.4:80) and bracketed IPv6 ([::1]:80)."""
+        """Extract the IP portion from an ss-style 'address:port' token,
+        handling both IPv4 ('1.2.3.4:80') and bracketed IPv6 ('[::1]:80')."""
         if not address_port:
             return None
         if address_port.startswith('['):
@@ -658,7 +824,7 @@ class IntrusionDetectionSystem:
     
     @staticmethod
     def _extract_port(address_port):
-        """Extract the port portion from an ss-style address:port token."""
+        """Extract the port portion from an ss-style 'address:port' token."""
         if not address_port or ':' not in address_port:
             return None
         return address_port.rsplit(':', 1)[1]
@@ -682,6 +848,8 @@ class IntrusionDetectionSystem:
             except Exception:
                 continue
         
+        # Fallback for systems without a usable systemd journal for SSH:
+        # whole-file count, matching the tool's original (non-windowed) behavior.
         try:
             result = subprocess.run(['grep', '-c', 'Failed password', '/var/log/auth.log'],
                                   capture_output=True, text=True)
@@ -691,7 +859,7 @@ class IntrusionDetectionSystem:
 
 
 class MalwareDetector:
-    """Malware Detection Module - Detects suspicious files"""
+    """NEW: Malware Detection Module - Detects suspicious files"""
     
     def __init__(self):
         self.suspicious_extensions = ['.exe', '.dll', '.scr', '.vbs', '.bat', '.cmd']
@@ -703,12 +871,14 @@ class MalwareDetector:
         
         suspicious_files = []
         
+        # Scan suspicious locations
         for path in self.suspicious_paths:
             try:
                 if os.path.exists(path):
                     for file in os.listdir(path):
                         file_path = os.path.join(path, file)
                         if os.path.isfile(file_path):
+                            # Check file permissions
                             perms = oct(os.stat(file_path).st_mode)[-3:]
                             if perms == '777':
                                 suspicious_files.append(file_path)
@@ -775,7 +945,7 @@ class MalwareDetector:
 
 
 class UserActivityAuditor:
-    """User Activity Auditing Module - Tracks user actions"""
+    """NEW: User Activity Auditing Module - Tracks user actions"""
     
     def audit_user_logins(self):
         """Audit user login history"""
@@ -786,6 +956,7 @@ class UserActivityAuditor:
             logins = result.stdout.count('\n')
             print(f"[+] Recent Logins: {logins}")
             
+            # Check for unauthorized access
             if 'invalid user' in result.stdout.lower():
                 print("[!] ALERT: Invalid user login attempts detected")
             
@@ -803,6 +974,7 @@ class UserActivityAuditor:
             sudo_count = result.stdout.count('\n')
             print(f"[+] Sudo Commands: {sudo_count}")
             
+            # Check for failed sudo attempts
             failed = result.stdout.count('sudo: 3 incorrect password attempts')
             if failed > 0:
                 print(f"[!] ALERT: {failed} failed sudo attempts detected")
@@ -840,7 +1012,7 @@ class UserActivityAuditor:
 
 
 class AdvancedReporter:
-    """Advanced Report Generation - Professional reporting"""
+    """NEW: Advanced Report Generation - Professional reporting"""
     
     def generate_comprehensive_report(self):
         """Generate comprehensive security report"""
@@ -929,7 +1101,7 @@ class AdvancedReporter:
 <body>
     <div class="container">
         <div class="header">
-            <h1>Shield Cyber-Defense-Shield</h1>
+            <h1>🛡️ Cyber-Defense-Shield</h1>
             <p>Comprehensive Security Assessment Report v1.2</p>
             <p>Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
         </div>
@@ -968,47 +1140,47 @@ class AdvancedReporter:
                 </tr>
                 <tr>
                     <td>Security Scanning</td>
-                    <td><span class="success">Active</span></td>
+                    <td><span class="success">✓ Active</span></td>
                     <td><span class="risk-level risk-low">Low</span></td>
                 </tr>
                 <tr>
                     <td>Network Monitoring</td>
-                    <td><span class="success">Active</span></td>
+                    <td><span class="success">✓ Active</span></td>
                     <td><span class="risk-level risk-low">Low</span></td>
                 </tr>
                 <tr>
                     <td>Vulnerability Scanner</td>
-                    <td><span class="success">Active</span></td>
+                    <td><span class="success">✓ Active</span></td>
                     <td><span class="risk-level risk-medium">Medium</span></td>
                 </tr>
                 <tr>
                     <td>Intrusion Detection</td>
-                    <td><span class="success">Active</span></td>
+                    <td><span class="success">✓ Active</span></td>
                     <td><span class="risk-level risk-low">Low</span></td>
                 </tr>
                 <tr>
                     <td>Malware Detection</td>
-                    <td><span class="success">Active</span></td>
+                    <td><span class="success">✓ Active</span></td>
                     <td><span class="risk-level risk-low">Low</span></td>
                 </tr>
                 <tr>
                     <td>User Auditing</td>
-                    <td><span class="success">Active</span></td>
+                    <td><span class="success">✓ Active</span></td>
                     <td><span class="risk-level risk-low">Low</span></td>
                 </tr>
                 <tr>
                     <td>DDoS Protection</td>
-                    <td><span class="success">Enabled</span></td>
+                    <td><span class="success">✓ Enabled</span></td>
                     <td><span class="risk-level risk-low">Low</span></td>
                 </tr>
                 <tr>
                     <td>Firewall</td>
-                    <td><span class="success">Enabled</span></td>
+                    <td><span class="success">✓ Enabled</span></td>
                     <td><span class="risk-level risk-low">Low</span></td>
                 </tr>
                 <tr>
                     <td>System Hardening</td>
-                    <td><span class="success">Applied</span></td>
+                    <td><span class="success">✓ Applied</span></td>
                     <td><span class="risk-level risk-low">Low</span></td>
                 </tr>
             </table>
@@ -1017,11 +1189,11 @@ class AdvancedReporter:
         <div class="section">
             <h2>NEW IN v1.2</h2>
             <ul>
-                <li><span class="success">✓</span> Per-Source Rate Limiting: DDoS protection now throttles by source IP</li>
-                <li><span class="success">✓</span> Source-Aware Intrusion Detection: Port scan and SYN flood checks grouped per source IP</li>
-                <li><span class="success">✓</span> Time-Windowed Brute Force Detection: Failed login alerts based on recent time window</li>
-                <li><span class="success">✓</span> Configurable Detection Thresholds: Rate limits and detection sensitivity tunable in config.py</li>
-                <li><span class="success">✓</span> Reduced False Positives: Suspicious-IP detection requires connection-count signal</li>
+                <li><span class="success">✓</span> <strong>Per-Source Rate Limiting:</strong> DDoS protection now throttles by source IP instead of one shared global limit, so concurrent legitimate users no longer exhaust each other's allowance</li>
+                <li><span class="success">✓</span> <strong>Source-Aware Intrusion Detection:</strong> Port scan and SYN flood checks are now grouped per source IP instead of a single system-wide counter</li>
+                <li><span class="success">✓</span> <strong>Time-Windowed Brute Force Detection:</strong> Failed login alerts are based on a recent time window instead of a lifetime log total</li>
+                <li><span class="success">✓</span> <strong>Configurable Detection Thresholds:</strong> Rate limits and detection sensitivity are now tunable in config.py instead of hardcoded</li>
+                <li><span class="success">✓</span> <strong>Reduced False Positives:</strong> Suspicious-IP detection now requires an actual connection-count signal instead of flagging every remote address</li>
             </ul>
         </div>
         
@@ -1055,7 +1227,7 @@ class AdvancedReporter:
         
         <div class="footer">
             <p><strong>Cyber-Defense-Shield v1.2</strong></p>
-            <p>Advanced Cybersecurity Defense Tool</p>
+            <p>Advanced Cybersecurity Defense & Protection Tool</p>
             <p>Cyber-Rage Security Team © 2026</p>
             <p>Report generated with advanced security analytics and real-time threat detection</p>
         </div>
