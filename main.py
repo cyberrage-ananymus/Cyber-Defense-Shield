@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cyber-Defense-Shield v1.2
+Cyber-Defense-Shield v1.3
 Advanced Cyber Security Defense & Protection Tool
 Main Application Controller
 """
 
 import os
 import sys
+import argparse
+import signal
+import time
+from datetime import datetime
 from defense_modules import (
     SecurityScanner,
     NetworkMonitor,
@@ -21,12 +25,13 @@ from defense_modules import (
     IntrusionDetectionSystem,
     MalwareDetector,
     UserActivityAuditor,
-    AdvancedReporter
+    AdvancedReporter,
+    AlertNotifier
 )
 
 
 class CyberDefenseShield:
-    """Main Application Class - Cyber-Defense-Shield v1.2"""
+    """Main Application Class - Cyber-Defense-Shield v1.3"""
     
     def __init__(self):
         """Initialize the application"""
@@ -43,13 +48,14 @@ class CyberDefenseShield:
         self.malware_detector = MalwareDetector()
         self.user_auditor = UserActivityAuditor()
         self.advanced_reporter = AdvancedReporter()
+        self.notifier = AlertNotifier()
     
     def print_banner(self):
         """Display application banner"""
         banner = """
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                                                                           ║
-║          🛡️  CYBER-DEFENSE-SHIELD v1.2 - Advanced Security Tool 🛡️        ║
+║          🛡️  CYBER-DEFENSE-SHIELD v1.3 - Advanced Security Tool 🛡️        ║
 ║                                                                           ║
 ║              Multi-Layered Cybersecurity Defense System                   ║
 ║                   Kali Linux / Debian-Based Linux                         ║
@@ -387,6 +393,97 @@ class CyberDefenseShield:
         print("[+] FULL SECURITY ASSESSMENT COMPLETE!")
         print("="*70 + "\n")
     
+    def run_daemon(self, interval=300):
+        """Run continuously in the background, without the interactive menu.
+
+        Intended for systemd (see cyber-defense-shield.service). Each
+        cycle runs detection-only checks (IDS, suspicious IPs, suspicious
+        processes/files) and sends an alert via AlertNotifier if anything
+        actionable is found. Deliberately does NOT re-run firewall/SSH/
+        sudo hardening or `apt-get upgrade` automatically each cycle -
+        those are mutating operations that stay under manual control via
+        the interactive menu, since silently re-applying system changes
+        on a timer is a materially riskier feature than monitoring.
+
+        Handles SIGTERM/SIGINT so `systemctl stop` shuts it down cleanly
+        instead of being killed mid-check.
+        """
+        log_file = None
+        try:
+            import config as _cfg_mod
+            log_file = getattr(_cfg_mod, 'LOG_FILE', None)
+        except Exception:
+            pass
+
+        def _log(message):
+            print(message)
+            if log_file:
+                try:
+                    with open(log_file, 'a') as f:
+                        f.write(message + '\n')
+                except Exception:
+                    pass  # Logging to disk is best-effort; stdout still works.
+
+        state = {'running': True}
+
+        def _stop(signum, frame):
+            _log("\n[*] Daemon received stop signal, shutting down gracefully...")
+            state['running'] = False
+
+        signal.signal(signal.SIGTERM, _stop)
+        signal.signal(signal.SIGINT, _stop)
+
+        _log(f"[*] Cyber-Defense-Shield daemon started (PID={os.getpid()}, interval={interval}s)")
+        self.check_root()
+
+        while state['running']:
+            cycle_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _log(f"\n[*] --- Daemon cycle: {cycle_start} ---")
+            findings = []
+
+            try:
+                findings.extend(self.ids.analyze_network_behavior())
+            except Exception as e:
+                _log(f"[!] Daemon IDS check failed: {e}")
+
+            try:
+                suspicious_ips = self.network_monitor.detect_suspicious_ips()
+                if suspicious_ips:
+                    findings.append(f"{len(suspicious_ips)} suspicious source IP(s): {', '.join(suspicious_ips[:5])}")
+            except Exception as e:
+                _log(f"[!] Daemon network check failed: {e}")
+
+            try:
+                suspicious_procs = self.security_scanner.check_suspicious_processes()
+                if suspicious_procs:
+                    findings.append(f"{len(suspicious_procs)} suspicious process(es) detected")
+            except Exception as e:
+                _log(f"[!] Daemon process check failed: {e}")
+
+            try:
+                suspicious_files = self.malware_detector.scan_for_suspicious_files()
+                if suspicious_files:
+                    findings.append(f"{len(suspicious_files)} suspicious file(s) found")
+            except Exception as e:
+                _log(f"[!] Daemon file scan failed: {e}")
+
+            if findings:
+                _log(f"[!] {len(findings)} finding(s) this cycle:")
+                for item in findings:
+                    _log(f"    - {item}")
+                self.notifier.send_alert("Findings detected", findings)
+            else:
+                _log("[+] No actionable findings this cycle")
+
+            # Sleep in short increments so a stop signal is honored quickly
+            # rather than blocking for the full interval.
+            slept = 0
+            while slept < interval and state['running']:
+                time.sleep(min(5, interval - slept))
+                slept += 5
+
+        _log("[+] Daemon stopped. Stay secure!")
+
     def run(self):
         """Main application loop"""
         self.print_banner()
@@ -443,10 +540,38 @@ class CyberDefenseShield:
                 print(f"\n[!] Error: {e}\n")
 
 
+def parse_args():
+    """Parse command-line arguments for daemon mode."""
+    parser = argparse.ArgumentParser(
+        description="Cyber-Defense-Shield v1.3 - Multi-Layered Cybersecurity Defense System"
+    )
+    parser.add_argument(
+        '--daemon', action='store_true',
+        help='Run continuously in the background (detection + alerts only), skipping the interactive menu'
+    )
+    parser.add_argument(
+        '--interval', type=int, default=None,
+        help='Seconds between check cycles in --daemon mode (default: from config.py, or 300)'
+    )
+    return parser.parse_args()
+
+
 def main():
     """Main entry point"""
+    args = parse_args()
     app = CyberDefenseShield()
-    app.run()
+
+    if args.daemon:
+        interval = args.interval
+        if interval is None:
+            try:
+                import config as _cfg_mod
+                interval = getattr(_cfg_mod, 'DAEMON_SCAN_INTERVAL_SECONDS', 300)
+            except Exception:
+                interval = 300
+        app.run_daemon(interval=interval)
+    else:
+        app.run()
 
 
 if __name__ == "__main__":
