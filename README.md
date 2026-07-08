@@ -23,18 +23,18 @@ Cyber-Defense-Shield is a comprehensive, enterprise-grade cybersecurity defense 
 ### 🌐 Network Protection
 - Real-time Network Monitoring: Continuous network activity analysis
 - Connection Tracking: Monitor and log all network connections
-- Traffic Analysis: Detailed network traffic inspection
+- Traffic Analysis: Connection-level traffic inspection (via `ss`/`netstat` - not packet-level DPI)
 - Suspicious IP Detection: Identify and log malicious IP addresses
-- Protocol Analysis: Deep packet inspection and analysis
+- Protocol Analysis: Connection state and port-level analysis
 - Bandwidth Monitoring: Track network usage patterns
 
 ### 🚨 DDoS/DoS Protection
-- Rate Limiting: Limit connection rates per IP address
-- SYN Flood Protection: Defend against SYN flood attacks
+- Rate Limiting: Per-source-IP connection rate limiting (iptables hashlimit)
+- SYN Flood Protection: SYN cookies + backlog tuning
 - UDP Flood Protection: Protect against UDP-based attacks
 - ICMP Flood Protection: Block ICMP echo request floods
+- Anti-Spoofing Protection: Kernel-level reverse-path filtering
 - Traffic Anomaly Detection: Identify unusual traffic patterns
-- Automatic Mitigation: Real-time attack response and blocking
 
 ### 🔥 Firewall Management
 - UFW Firewall Control: Enable and configure firewall rules
@@ -373,8 +373,8 @@ Classes:
 - FirewallManager: Firewall configuration
 - SystemHardener: System security hardening (SSH, sudo, services, syscall-level audit rules)
 - LogAnalyzer: Log analysis, attack pattern detection, syscall audit event queries
-- RealtimeThreatDetector: Real-time monitoring
-- ReportGenerator: Report generation
+- RealtimeThreatDetector: Tight-loop monitoring (suspicious IPs, ARP spoofing) for Option 7
+- ReportGenerator: Report generation, pulls in all v1.4 checks (rootkit/kernel/ARP/services)
 - VulnerabilityScanner: Known vulnerability / outdated package checks
 - IntrusionDetectionSystem: Per-source IDS (port scan, SYN flood, brute force, ARP spoofing/MITM)
 - MalwareDetector: Suspicious file/process detection, kernel module analysis, basic rootkit indicators
@@ -491,20 +491,29 @@ sudo systemctl restart ssh
 
 ## Performance Considerations
 
-- Scan Duration: Full scans may take 2-5 minutes
-- Resource Usage: Minimal CPU/memory impact
-- Network Impact: Minimal bandwidth consumption
-- Real-time Detection: Low overhead continuous monitoring
+- Interactive menu scans (Options 1-16): on-demand, one-shot subprocess calls (`ss`, `ps`, `grep`, etc.) - generally sub-second, negligible impact.
+- Daemon mode (`--daemon`): runs a small check cycle once per interval (5 min default, configurable via `--interval` or `DAEMON_SCAN_INTERVAL_SECONDS`). Fully idle (zero CPU) between cycles.
+- Most daemon checks (connection state, ARP table, suspicious IPs) read kernel tables directly - fast regardless of server load.
+- The Web Attack Scan (Option 15 / daemon) tails access logs incrementally - cost scales with *new* traffic since the last check, not total log size.
+- None of this sits inline in the request path. It's a periodic background checker, not a WAF/IPS/proxy, so it cannot add latency to real traffic.
+- No built-in benchmarking exists yet - the above is based on what each check actually does, not measured numbers under production load. If you run it on a busy server, real numbers would be genuinely useful feedback.
 
 ## Limitations
 
-Important Notes:
+This tool does what's described above and nothing more. Specifically, it does **not**:
+- Perform deep packet inspection or payload-level packet capture (no scapy/DPI - detection is connection/log/signature-based)
+- Automatically block or respond to a detected threat (detection and mitigation are separate; nothing here auto-bans an IP because the IDS flagged it)
+- Replace a real WAF, IDS/IPS (Suricata/Snort), or EDR - the web attack scanner is signature-based log scanning, not inline traffic filtering
+- Replace dedicated rootkit scanners (rkhunter, chkrootkit) - the built-in checks are basic heuristics (process-count mismatch, known paths, kernel module vs. on-disk comparison), not a full rootkit database
+- Detect zero-day exploits, novel attack patterns, or anything outside its hardcoded/configured signatures
+- Protect against insider threats, physical access, or supply-chain compromise
+- Work out of the box on non-Debian/Kali systems (assumes `ufw`, `iptables`, `ss`, `dpkg`, `auditctl` are present)
+- Guarantee CIS Benchmark or any other compliance framework (the `COMPLIANCE` config flag is not currently backed by real checks - see Roadmap)
+
+General notes that apply regardless of tooling:
 - No tool provides 100% protection against all attacks
-- Zero-day exploits may bypass protections
-- Regular updates and monitoring are essential
-- Manual review of logs recommended
-- Cannot protect against physical attacks
-- Requires proper configuration for effectiveness
+- Regular updates and manual log review are still recommended
+- Requires correct configuration (thresholds, `EXPECTED_SERVICES`, etc.) for the checks to be meaningful on your specific system
 
 ## Legal Disclaimer
 
@@ -553,6 +562,11 @@ For support and questions:
 - Daemon mode now also runs the web attack scan and ARP spoofing check each cycle
 - Full audit of every claim in "Threat Protection Capabilities" against the actual code - anything without a real implementation was either built for real (this release) or removed from the list
 - Web Attack Scan (Option 15) now tails the access log incrementally (tracks byte offset, rotation-aware) instead of re-reading and re-scanning the entire file every cycle - keeps daemon mode's cost proportional to recent traffic, not total log size, on a busy server
+- File Integrity Checking (Option 11) now actually compares against a stored baseline and reports what changed, instead of only computing and printing hashes with nothing to compare against
+- Real-time Monitoring (Option 7) now actually checks something each iteration (suspicious IPs, ARP spoofing) instead of an empty sleep loop
+- Report generation (Options 8/13) now includes the v1.4 checks (rootkit indicators, kernel modules, ARP spoofing, running services), not just the original v1.3 set
+- Removed two README claims that weren't backed by code ("deep packet inspection", "automatic real-time mitigation") and rewrote Performance Considerations / Limitations with specifics instead of generic boilerplate
+- Fixed a version-string inconsistency: some code comments/banners still said v1.3 after the README had already moved to v1.4
 
 ### v1.3.1 (2026)
 - Added Web Attack Scan (Option 15): actually wires up the SQL_INJECTION/XSS/PATH_TRAVERSAL signatures in config.py's ATTACK_PATTERNS to a real check against nginx/apache access logs - these patterns previously existed in config.py but were never read by any code
