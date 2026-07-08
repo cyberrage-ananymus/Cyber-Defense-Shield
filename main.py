@@ -34,7 +34,7 @@ from defense_modules import (
 
 
 class CyberDefenseShield:
-    """Main Application Class - Cyber-Defense-Shield v1.3"""
+    """Main Application Class - Cyber-Defense-Shield v1.4"""
     
     def __init__(self):
         """Initialize the application"""
@@ -620,7 +620,7 @@ class CyberDefenseShield:
 def parse_args():
     """Parse command-line arguments for daemon mode."""
     parser = argparse.ArgumentParser(
-        description="Cyber-Defense-Shield v1.3 - Multi-Layered Cybersecurity Defense System"
+        description="Cyber-Defense-Shield v1.4 - Multi-Layered Cybersecurity Defense System"
     )
     parser.add_argument(
         '--daemon', action='store_true',
