@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cyber-Defense-Shield v1.3
+Cyber-Defense-Shield v1.4
 Advanced Cyber Security Defense & Protection Tool
 Main Application Controller
 """
@@ -11,6 +11,8 @@ import sys
 import argparse
 import signal
 import time
+import logging
+import logging.handlers
 from datetime import datetime
 from defense_modules import (
     SecurityScanner,
@@ -26,7 +28,8 @@ from defense_modules import (
     MalwareDetector,
     UserActivityAuditor,
     AdvancedReporter,
-    AlertNotifier
+    AlertNotifier,
+    WebAttackScanner
 )
 
 
@@ -49,13 +52,14 @@ class CyberDefenseShield:
         self.user_auditor = UserActivityAuditor()
         self.advanced_reporter = AdvancedReporter()
         self.notifier = AlertNotifier()
+        self.web_attack_scanner = WebAttackScanner()
     
     def print_banner(self):
         """Display application banner"""
         banner = """
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                                                                           ║
-║          🛡️  CYBER-DEFENSE-SHIELD v1.3 - Advanced Security Tool 🛡️        ║
+║          🛡️  CYBER-DEFENSE-SHIELD v1.4 - Advanced Security Tool 🛡️        ║
 ║                                                                           ║
 ║              Multi-Layered Cybersecurity Defense System                   ║
 ║                   Kali Linux / Debian-Based Linux                         ║
@@ -96,7 +100,8 @@ class CyberDefenseShield:
 │  12. 👤 User Activity Auditing & Monitoring                             │
 │  13. 📈 Advanced Comprehensive Report                                   │
 │  14. 🔄 Run All Security Checks (Full Assessment)                       │
-│  15. ❌ Exit Program                                                     │
+│  15. 🌐 Web Attack Scan (SQLi / XSS / Path Traversal)                   │
+│  16. ❌ Exit Program                                                     │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
         """
@@ -143,6 +148,9 @@ class CyberDefenseShield:
         print("\n[*] Step 5: Scanning installed packages...")
         self.security_scanner.check_suspicious_packages()
         
+        print("\n[*] Step 6: Checking running services...")
+        self.security_scanner.check_running_services()
+        
         print("\n[+] Full System Security Scan COMPLETE!\n")
     
     def run_option_2(self):
@@ -176,6 +184,12 @@ class CyberDefenseShield:
         
         print("\n[*] Enabling UDP flood protection...")
         self.ddos_protector.enable_udp_flood_protection()
+        
+        print("\n[*] Enabling ICMP flood protection...")
+        self.ddos_protector.enable_icmp_flood_protection()
+        
+        print("\n[*] Enabling anti-spoofing protection...")
+        self.ddos_protector.enable_anti_spoofing_protection()
         
         print("\n[*] Monitoring traffic anomalies...")
         self.ddos_protector.monitor_traffic_anomalies()
@@ -240,6 +254,9 @@ class CyberDefenseShield:
         print("\n[*] Detecting attack patterns...")
         self.log_analyzer.detect_attack_patterns()
         
+        print("\n[*] Checking syscall audit events...")
+        self.log_analyzer.check_syscall_audit_events()
+        
         print("\n[+] Log Analysis COMPLETE!\n")
     
     def run_option_7(self):
@@ -300,6 +317,10 @@ class CyberDefenseShield:
         print("\n[*] Monitoring suspicious connections...")
         suspicious = self.ids.monitor_suspicious_connections()
         
+        print("\n[*] Checking for ARP spoofing (MITM indicators)...")
+        arp_findings = self.ids.detect_arp_spoofing()
+        threats.extend(arp_findings)
+        
         if threats:
             print("\n[!] THREATS DETECTED:")
             for threat in threats:
@@ -324,12 +345,23 @@ class CyberDefenseShield:
         print("\n[*] Analyzing executable behavior...")
         suspicious_processes = self.malware_detector.scan_executable_behavior()
         
+        print("\n[*] Analyzing kernel modules...")
+        flagged_modules = self.malware_detector.analyze_kernel_modules()
+        
+        print("\n[*] Checking basic rootkit indicators...")
+        rootkit_findings = self.malware_detector.check_rootkit_indicators()
+        
         if suspicious_files:
             print("\n[!] SUSPICIOUS FILES FOUND:")
             for file in suspicious_files:
                 print(f"    - {file}")
         else:
             print("\n[+] No suspicious files detected!")
+        
+        if flagged_modules or rootkit_findings:
+            print("\n[!] ROOTKIT/KERNEL INDICATORS FOUND:")
+            for item in flagged_modules + rootkit_findings:
+                print(f"    - {item}")
         
         print("\n[+] Malware Detection COMPLETE!\n")
     
@@ -384,6 +416,7 @@ class CyberDefenseShield:
         self.run_option_10()
         self.run_option_11()
         self.run_option_12()
+        self.run_option_15()
         
         # Generate comprehensive report
         print("\n[*] Generating comprehensive report...")
@@ -392,6 +425,21 @@ class CyberDefenseShield:
         print("\n" + "="*70)
         print("[+] FULL SECURITY ASSESSMENT COMPLETE!")
         print("="*70 + "\n")
+    
+    def run_option_15(self):
+        """Web Attack Scan (SQLi / XSS / Path Traversal)"""
+        print("\n" + "="*70)
+        print("[*] WEB ATTACK SCAN (SQLi / XSS / PATH TRAVERSAL)")
+        print("="*70)
+        
+        findings = self.web_attack_scanner.scan_web_logs()
+        
+        if findings:
+            print("\n[!] SIGNATURE MATCHES FOUND:")
+            for item in findings:
+                print(f"    - {item}")
+        
+        print("\n[+] Web Attack Scan COMPLETE!\n")
     
     def run_daemon(self, interval=300):
         """Run continuously in the background, without the interactive menu.
@@ -415,65 +463,92 @@ class CyberDefenseShield:
         except Exception:
             pass
 
-        def _log(message):
-            print(message)
-            if log_file:
-                try:
-                    with open(log_file, 'a') as f:
-                        f.write(message + '\n')
-                except Exception:
-                    pass  # Logging to disk is best-effort; stdout still works.
+        # Uses the standard logging module with a size-based rotating file
+        # handler, instead of a manual open()/write() per line. The manual
+        # version had no rotation, so a daemon left running for weeks would
+        # grow the log file without bound. 5MB x 3 backups keeps a bounded
+        # history on disk regardless of how long the daemon has been up.
+        logger = logging.getLogger('cyber_defense_shield')
+        logger.setLevel(logging.INFO)
+        logger.handlers.clear()
+
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter('%(message)s'))
+        logger.addHandler(console_handler)
+
+        if log_file:
+            try:
+                os.makedirs(os.path.dirname(log_file) or '.', exist_ok=True)
+                file_handler = logging.handlers.RotatingFileHandler(
+                    log_file, maxBytes=5 * 1024 * 1024, backupCount=3
+                )
+                file_handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
+                logger.addHandler(file_handler)
+            except Exception as e:
+                logger.warning(f"[!] Could not set up log file at {log_file}, console-only: {e}")
 
         state = {'running': True}
 
         def _stop(signum, frame):
-            _log("\n[*] Daemon received stop signal, shutting down gracefully...")
+            logger.info("Daemon received stop signal, shutting down gracefully...")
             state['running'] = False
 
         signal.signal(signal.SIGTERM, _stop)
         signal.signal(signal.SIGINT, _stop)
 
-        _log(f"[*] Cyber-Defense-Shield daemon started (PID={os.getpid()}, interval={interval}s)")
+        logger.info(f"[*] Cyber-Defense-Shield daemon started (PID={os.getpid()}, interval={interval}s)")
         self.check_root()
 
         while state['running']:
             cycle_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            _log(f"\n[*] --- Daemon cycle: {cycle_start} ---")
+            logger.info(f"--- Daemon cycle: {cycle_start} ---")
             findings = []
 
             try:
                 findings.extend(self.ids.analyze_network_behavior())
             except Exception as e:
-                _log(f"[!] Daemon IDS check failed: {e}")
+                logger.warning(f"[!] Daemon IDS check failed: {e}")
 
             try:
                 suspicious_ips = self.network_monitor.detect_suspicious_ips()
                 if suspicious_ips:
                     findings.append(f"{len(suspicious_ips)} suspicious source IP(s): {', '.join(suspicious_ips[:5])}")
             except Exception as e:
-                _log(f"[!] Daemon network check failed: {e}")
+                logger.warning(f"[!] Daemon network check failed: {e}")
 
             try:
                 suspicious_procs = self.security_scanner.check_suspicious_processes()
                 if suspicious_procs:
                     findings.append(f"{len(suspicious_procs)} suspicious process(es) detected")
             except Exception as e:
-                _log(f"[!] Daemon process check failed: {e}")
+                logger.warning(f"[!] Daemon process check failed: {e}")
 
             try:
                 suspicious_files = self.malware_detector.scan_for_suspicious_files()
                 if suspicious_files:
                     findings.append(f"{len(suspicious_files)} suspicious file(s) found")
             except Exception as e:
-                _log(f"[!] Daemon file scan failed: {e}")
+                logger.warning(f"[!] Daemon file scan failed: {e}")
+
+            try:
+                web_findings = self.web_attack_scanner.scan_web_logs()
+                findings.extend(web_findings)
+            except Exception as e:
+                logger.warning(f"[!] Daemon web attack scan failed: {e}")
+
+            try:
+                arp_findings = self.ids.detect_arp_spoofing()
+                findings.extend(arp_findings)
+            except Exception as e:
+                logger.warning(f"[!] Daemon ARP spoofing check failed: {e}")
 
             if findings:
-                _log(f"[!] {len(findings)} finding(s) this cycle:")
+                logger.info(f"[!] {len(findings)} finding(s) this cycle:")
                 for item in findings:
-                    _log(f"    - {item}")
+                    logger.info(f"    - {item}")
                 self.notifier.send_alert("Findings detected", findings)
             else:
-                _log("[+] No actionable findings this cycle")
+                logger.info("[+] No actionable findings this cycle")
 
             # Sleep in short increments so a stop signal is honored quickly
             # rather than blocking for the full interval.
@@ -482,7 +557,7 @@ class CyberDefenseShield:
                 time.sleep(min(5, interval - slept))
                 slept += 5
 
-        _log("[+] Daemon stopped. Stay secure!")
+        logger.info("[+] Daemon stopped. Stay secure!")
 
     def run(self):
         """Main application loop"""
@@ -495,7 +570,7 @@ class CyberDefenseShield:
             self.print_menu()
             
             try:
-                choice = input("\n[*] Enter your choice (1-15): ").strip()
+                choice = input("\n[*] Enter your choice (1-16): ").strip()
                 
                 if choice == '1':
                     self.run_option_1()
@@ -526,11 +601,13 @@ class CyberDefenseShield:
                 elif choice == '14':
                     self.run_option_14()
                 elif choice == '15':
+                    self.run_option_15()
+                elif choice == '16':
                     print("\n[*] Exiting Cyber-Defense-Shield...")
                     print("[+] Stay secure! 🛡️\n")
                     sys.exit(0)
                 else:
-                    print("\n[!] Invalid choice! Please enter a number between 1-15.\n")
+                    print("\n[!] Invalid choice! Please enter a number between 1-16.\n")
             
             except KeyboardInterrupt:
                 print("\n\n[*] Interrupted by user...")
