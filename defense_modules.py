@@ -536,12 +536,45 @@ class DDosProtector:
             print(f"[!] SYN Flood Protection: Requires root access")
     
     def enable_udp_flood_protection(self):
-        """Enable UDP flood protection"""
+        """Enable UDP flood protection via real per-source rate limiting.
+
+        The previous version called `sysctl -w net.ipv4.udp_ratelimit=0`
+        and unconditionally printed "ENABLED" regardless of the result.
+        That sysctl key does not exist in the Linux kernel (verified
+        against kernel.org's ip-sysctl documentation - there is no
+        UDP-wide rate-limit knob the way there is for ICMP). The command
+        always failed silently, and this method has been claiming
+        success while doing nothing. Real UDP flood mitigation on Linux
+        needs an actual firewall rule, not a sysctl - this now adds a
+        per-source hashlimit rule, the same real mechanism already used
+        for TCP rate limiting and ICMP flood protection. Idempotent via
+        `iptables -C`, persisted across reboots.
+        """
+        rate = _cfg('UDP_RATE_LIMIT_PER_SECOND', 50)
+        burst = _cfg('UDP_RATE_LIMIT_BURST', 100)
+
+        rule_spec = [
+            '-p', 'udp',
+            '-m', 'hashlimit', '--hashlimit-name', 'udp_flood',
+            '--hashlimit-mode', 'srcip',
+            '--hashlimit-above', f'{rate}/second',
+            '--hashlimit-burst', str(burst),
+            '-j', 'DROP'
+        ]
         try:
-            subprocess.run(['sysctl', '-w', 'net.ipv4.udp_ratelimit=0'], capture_output=True)
-            print("[+] UDP Flood Protection: ENABLED")
+            check = subprocess.run(['iptables', '-C', 'INPUT'] + rule_spec, capture_output=True)
+            if check.returncode == 0:
+                print(f"[+] UDP Flood Protection: Already active ({rate} packets/sec per source)")
+                return
+
+            result = subprocess.run(['iptables', '-A', 'INPUT'] + rule_spec, capture_output=True)
+            if result.returncode == 0:
+                print(f"[+] UDP Flood Protection: ENABLED per-source ({rate} packets/sec, burst {burst})")
+                self._persist_iptables_rules()
+            else:
+                print("[!] UDP Flood Protection: Requires root access")
         except Exception as e:
-            print(f"[!] UDP Flood Protection: Requires root access")
+            print(f"[!] UDP Flood Protection: Requires root access ({e})")
 
     def enable_icmp_flood_protection(self):
         """Enable ICMP flood protection.
