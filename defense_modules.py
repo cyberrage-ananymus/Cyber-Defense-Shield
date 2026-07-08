@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Defense Modules - Core Security Functions
-Updated Version 1.3 - Daemon Mode & Alerting
+Updated Version 1.4 - Daemon Mode & Alerting
 """
 
 import subprocess
@@ -111,6 +111,125 @@ class AlertNotifier:
             print("[!] Alert configured but failed to send (check credentials/network)")
 
 
+class WebAttackScanner:
+    """Scans web server access logs for known SQLi/XSS/path-traversal signatures.
+
+    The ATTACK_PATTERNS dict in config.py (SQL_INJECTION, XSS,
+    PATH_TRAVERSAL) previously existed but was never actually read by any
+    code - the README's claim of protection against SQLi/XSS was not
+    backed by an actual check. This class is what makes that claim real,
+    even if modestly: it greps nginx/apache access logs for the
+    configured signatures.
+
+    Important scope limits, stated plainly: this is signature-based log
+    scanning, not a WAF. It cannot block a request - it can only tell you
+    a matching request already happened. It only sees traffic that hits a
+    web server logging to one of LOG_PATHS. It is not a substitute for a
+    real WAF (e.g. ModSecurity, Cloudflare) in front of anything that
+    actually needs one.
+    """
+
+    LOG_PATHS = [
+        '/var/log/nginx/access.log',
+        '/var/log/apache2/access.log',
+        '/var/log/httpd/access_log',
+    ]
+
+    OFFSET_STATE_FILE = '/var/tmp/.cds_weblog_offsets.json'
+
+    def _load_offsets(self):
+        try:
+            with open(self.OFFSET_STATE_FILE, 'r') as f:
+                return json.loads(f.read())
+        except Exception:
+            return {}
+
+    def _save_offsets(self, offsets):
+        try:
+            with open(self.OFFSET_STATE_FILE, 'w') as f:
+                f.write(json.dumps(offsets))
+        except Exception:
+            pass  # Best-effort; worst case we re-tail from EOF next run.
+
+    def scan_web_logs(self):
+        """Scan new lines in a web server access log for attack signatures.
+
+        Incremental by design: tracks a byte offset per log file (in
+        OFFSET_STATE_FILE) and only reads/scans lines written since the
+        last check, instead of re-reading the entire file every time. On
+        a busy server the access log can be huge and grows continuously -
+        re-reading and re-scanning the whole thing every daemon cycle
+        (every few minutes) would mean steadily increasing CPU/memory/disk
+        I/O cost as the log grows through the day, and it would also
+        re-report the same old matches repeatedly. This only ever looks
+        at what's new since last time, so the cost per cycle stays
+        proportional to recent traffic, not total log size.
+
+        First run (no stored offset yet) starts from the current end of
+        the file rather than scanning existing history, so turning this
+        on doesn't trigger one large one-time scan of a potentially huge
+        pre-existing log. If the log was rotated/truncated since the
+        last check (stored offset is now beyond the file's current size),
+        this detects that and restarts from the beginning of the new file
+        instead of erroring out or missing everything.
+        """
+        print("[*] Scanning web server logs for attack signatures...")
+
+        patterns = _cfg('ATTACK_PATTERNS', {})
+        if not patterns:
+            print("[!] Web Attack Scan: No ATTACK_PATTERNS configured in config.py")
+            return []
+
+        log_path = next((p for p in self.LOG_PATHS if os.path.exists(p)), None)
+        if not log_path:
+            print("[*] Web Attack Scan: No web server access log found (checked nginx, apache2, httpd)")
+            return []
+
+        try:
+            file_size = os.path.getsize(log_path)
+            offsets = self._load_offsets()
+            last_offset = offsets.get(log_path)
+
+            if last_offset is None:
+                # First time seeing this log: skip existing history, start
+                # watching from here on rather than one big historical scan.
+                last_offset = file_size
+            elif last_offset > file_size:
+                # Log was rotated/truncated since last check.
+                print(f"[*] Web Attack Scan: {log_path} appears to have been rotated, restarting from the beginning")
+                last_offset = 0
+
+            with open(log_path, 'r', errors='ignore') as f:
+                f.seek(last_offset)
+                new_lines = f.readlines()
+                new_offset = f.tell()
+
+            offsets[log_path] = new_offset
+            self._save_offsets(offsets)
+        except Exception as e:
+            print(f"[!] Web Attack Scan: {e}")
+            return []
+
+        if not new_lines:
+            print(f"[+] Web Attack Scan: No new log entries since last check ({log_path})")
+            return []
+
+        findings = []
+        for category, signatures in patterns.items():
+            matches = sum(
+                1 for line in new_lines
+                if any(sig.lower() in line.lower() for sig in signatures)
+            )
+            if matches > 0:
+                findings.append(f"{category}: {matches} matching request(s) in {log_path}")
+                print(f"[!] {category}: {matches} suspicious request(s) found")
+
+        if not findings:
+            print(f"[+] Web Attack Scan: No signature matches in {log_path} ({len(new_lines)} new lines scanned)")
+
+        return findings
+
+
 class SecurityScanner:
     """Main Security Scanner"""
     
@@ -189,6 +308,51 @@ class SecurityScanner:
         except Exception as e:
             print(f"[!] Error: {e}")
             return []
+
+    def check_running_services(self):
+        """Check running services against an optional allowlist.
+
+        README previously listed "Unauthorized Service Detection" with no
+        code behind it. Being honest about what's actually possible here:
+        this tool has no baseline of what's "normal" for your system, so
+        it can't truthfully claim to detect "unauthorized" services out
+        of the box. What it does:
+
+        - If config.py's EXPECTED_SERVICES list is populated, flags any
+          running service NOT on that list - a real allowlist check.
+        - If EXPECTED_SERVICES is empty (the default), it just lists what
+          IS running so you can populate the allowlist yourself, rather
+          than guessing at a generic list and producing false positives
+          on every non-default setup.
+        """
+        print("[*] Checking running services...")
+        expected = set(_cfg('EXPECTED_SERVICES', []))
+
+        try:
+            result = subprocess.run(
+                ['systemctl', 'list-units', '--type=service', '--state=running', '--no-legend', '--no-pager'],
+                capture_output=True, text=True
+            )
+            running = []
+            for line in result.stdout.strip().split('\n'):
+                if line.strip():
+                    running.append(line.split()[0].replace('.service', ''))
+        except Exception as e:
+            print(f"[!] Error checking services: {e}")
+            return []
+
+        if not expected:
+            print(f"[*] {len(running)} service(s) running. EXPECTED_SERVICES is empty in config.py,")
+            print("    so nothing is flagged - populate it with your normal service list to enable allowlist checking.")
+            return []
+
+        unexpected = [s for s in running if s not in expected]
+        if unexpected:
+            print(f"[!] {len(unexpected)} service(s) running that are NOT in EXPECTED_SERVICES: {', '.join(unexpected[:10])}")
+        else:
+            print(f"[+] All {len(running)} running service(s) are in EXPECTED_SERVICES")
+
+        return unexpected
 
 
 class NetworkMonitor:
@@ -378,6 +542,79 @@ class DDosProtector:
             print("[+] UDP Flood Protection: ENABLED")
         except Exception as e:
             print(f"[!] UDP Flood Protection: Requires root access")
+
+    def enable_icmp_flood_protection(self):
+        """Enable ICMP flood protection.
+
+        README previously listed "ICMP Flood Protection" as a capability
+        with no code behind it at all. This makes the claim real: ignores
+        broadcast pings (blocks the classic Smurf-attack amplification
+        vector) and rate-limits how many ICMP echo requests the kernel
+        will respond to per second via iptables, so a ping flood can't
+        consume unbounded CPU/bandwidth. Idempotent via `iptables -C`,
+        same pattern as enable_rate_limiting.
+        """
+        ignore_broadcasts = _cfg('NETWORK_SECURITY', {}).get('enable_icmp_echo_ignore', True)
+        limit = _cfg('ICMP_RATE_LIMIT_PER_SECOND', 10)
+
+        try:
+            if ignore_broadcasts:
+                subprocess.run(['sysctl', '-w', 'net.ipv4.icmp_echo_ignore_broadcasts=1'], capture_output=True)
+
+            rule_spec = [
+                '-p', 'icmp', '--icmp-type', 'echo-request',
+                '-m', 'limit', '--limit', f'{limit}/second', '--limit-burst', str(limit * 2),
+                '-j', 'ACCEPT'
+            ]
+            check = subprocess.run(['iptables', '-C', 'INPUT'] + rule_spec, capture_output=True)
+            if check.returncode != 0:
+                subprocess.run(['iptables', '-A', 'INPUT'] + rule_spec, capture_output=True)
+                # Anything over the limit falls through to this drop rule.
+                drop_spec = ['-p', 'icmp', '--icmp-type', 'echo-request', '-j', 'DROP']
+                drop_check = subprocess.run(['iptables', '-C', 'INPUT'] + drop_spec, capture_output=True)
+                if drop_check.returncode != 0:
+                    subprocess.run(['iptables', '-A', 'INPUT'] + drop_spec, capture_output=True)
+                print(f"[+] ICMP Flood Protection: ENABLED (echo-request limited to {limit}/sec, broadcast pings ignored: {ignore_broadcasts})")
+                self._persist_iptables_rules()
+            else:
+                print(f"[+] ICMP Flood Protection: Already active ({limit}/sec limit)")
+        except Exception as e:
+            print(f"[!] ICMP Flood Protection: Requires root access ({e})")
+
+    def enable_anti_spoofing_protection(self):
+        """Enable IP spoofing protection via kernel reverse-path filtering.
+
+        README previously listed "IP Spoofing Detection" with no code
+        behind it. True packet-level spoofing *detection* would need
+        inline packet inspection; what actually stops spoofed-source
+        packets on Linux is reverse-path filtering (rp_filter), the
+        standard kernel-level anti-spoofing mechanism - if a reply to a
+        packet's claimed source wouldn't route back out the interface it
+        arrived on, the kernel drops it. Also disables source-routed
+        packets, a related classic spoofing/routing-attack vector.
+        Settings are read from config.py's existing NETWORK_SECURITY dict.
+        """
+        net_sec = _cfg('NETWORK_SECURITY', {})
+        rp_filter = net_sec.get('enable_reverse_path_filter', True)
+        block_source_route = net_sec.get('enable_source_route_check', True)
+
+        applied = []
+        try:
+            if rp_filter:
+                subprocess.run(['sysctl', '-w', 'net.ipv4.conf.all.rp_filter=1'], capture_output=True)
+                subprocess.run(['sysctl', '-w', 'net.ipv4.conf.default.rp_filter=1'], capture_output=True)
+                applied.append('reverse-path filtering')
+            if block_source_route:
+                subprocess.run(['sysctl', '-w', 'net.ipv4.conf.all.accept_source_route=0'], capture_output=True)
+                subprocess.run(['sysctl', '-w', 'net.ipv4.conf.default.accept_source_route=0'], capture_output=True)
+                applied.append('source-route rejection')
+
+            if applied:
+                print(f"[+] Anti-Spoofing Protection: ENABLED ({', '.join(applied)})")
+            else:
+                print("[*] Anti-Spoofing Protection: Disabled in config.py (NETWORK_SECURITY)")
+        except Exception as e:
+            print(f"[!] Anti-Spoofing Protection: Requires root access ({e})")
     
     def monitor_traffic_anomalies(self):
         """Monitor for traffic anomalies.
@@ -605,13 +842,46 @@ Defaults timestamp_timeout=5
             print(f"[!] Sudo Hardening: {e}")
     
     def enable_audit_logging(self):
-        """Enable audit logging"""
+        """Enable audit logging, including real syscall-level rules.
+
+        README previously listed "System Call Monitoring" with no code
+        behind it - the only audit rule that existed watched a single
+        file (/etc/passwd) for writes, which is file-integrity
+        monitoring, not syscall monitoring. The rules added below use the
+        Linux Audit subsystem's actual syscall-level interface
+        (`-S execve`, `-S connect`) - this is genuine kernel-level system
+        call auditing, the same mechanism tools like auditd/OSSEC use, not
+        a simulation of it. See LogAnalyzer.check_syscall_audit_events()
+        to query what these rules have captured.
+
+        Also fixes a pre-existing bug: the previous version's except
+        block printed "ENABLED" even when auditctl failed or wasn't
+        installed, silently claiming success on failure.
+        """
+        rules = [
+            (['auditctl', '-w', '/etc/passwd', '-p', 'wa', '-k', 'passwd_changes'], 'file watch: /etc/passwd'),
+            (['auditctl', '-a', 'always,exit', '-F', 'arch=b64', '-S', 'execve', '-k', 'syscall_exec'], 'syscall watch: execve (b64)'),
+            (['auditctl', '-a', 'always,exit', '-F', 'arch=b32', '-S', 'execve', '-k', 'syscall_exec'], 'syscall watch: execve (b32)'),
+            (['auditctl', '-a', 'always,exit', '-F', 'arch=b64', '-S', 'connect', '-k', 'syscall_connect'], 'syscall watch: connect'),
+        ]
+
+        applied = []
         try:
-            subprocess.run(['auditctl', '-w', '/etc/passwd', '-p', 'wa', '-k', 'passwd_changes'],
-                         capture_output=True)
-            print("[+] Audit Logging: ENABLED")
-        except:
-            print("[+] Audit Logging: ENABLED")
+            for rule_cmd, label in rules:
+                result = subprocess.run(rule_cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    applied.append(label)
+
+            if applied:
+                print(f"[+] Audit Logging: ENABLED ({len(applied)}/{len(rules)} rules applied)")
+                for label in applied:
+                    print(f"    - {label}")
+            else:
+                print("[!] Audit Logging: Requires root access, or auditd is not installed")
+        except FileNotFoundError:
+            print("[!] Audit Logging: auditctl not found (install the auditd package)")
+        except Exception as e:
+            print(f"[!] Audit Logging: {e}")
 
 
 class LogAnalyzer:
@@ -692,6 +962,38 @@ class LogAnalyzer:
             print("[+] Attack Pattern Detection: No known attack signatures found")
         else:
             print(f"[+] Attack Pattern Detection: {len(findings)} pattern type(s) matched")
+
+        return findings
+
+    def check_syscall_audit_events(self):
+        """Query recent events captured by the syscall-level audit rules.
+
+        Reads what SystemHardener.enable_audit_logging()'s `-S execve` /
+        `-S connect` rules have actually recorded, via `ausearch`. If
+        audit logging was never enabled (Option 5), this will correctly
+        report nothing rather than fail confusingly.
+        """
+        print("[*] Checking syscall audit events (last 10 minutes)...")
+        findings = []
+
+        for key, label in [('syscall_exec', 'execve'), ('syscall_connect', 'connect')]:
+            try:
+                result = subprocess.run(
+                    ['ausearch', '-k', key, '-ts', 'recent'],
+                    capture_output=True, text=True, timeout=10
+                )
+                count = result.stdout.count('type=SYSCALL')
+                if count > 0:
+                    findings.append(f"{count} '{label}' syscall event(s) recorded (key={key})")
+                    print(f"[+] {count} '{label}' event(s) found")
+            except FileNotFoundError:
+                print("[!] Syscall Audit Check: ausearch not found (install the auditd package)")
+                break
+            except Exception as e:
+                print(f"[!] Syscall Audit Check ({label}): {e}")
+
+        if not findings:
+            print("[*] No syscall audit events found (rules may not be enabled yet - see Option 5)")
 
         return findings
 
@@ -1022,6 +1324,56 @@ class IntrusionDetectionSystem:
         print(f"[+] Suspicious Connection Check: {len(suspicious)} found")
         return suspicious
     
+    def detect_arp_spoofing(self):
+        """Detect likely ARP spoofing (basic Man-in-the-Middle indicator).
+
+        README previously listed "Man-in-the-Middle Detection" with no
+        code behind it anywhere. This implements the standard lightweight
+        technique real tools like arpwatch use: on a healthy LAN segment,
+        each IP should resolve to exactly one MAC address. A single IP
+        showing multiple different MAC addresses in the ARP table at the
+        same time is the classic signature of ARP spoofing/cache
+        poisoning, which is how most on-LAN MITM attacks are actually
+        carried out.
+
+        Scope limit stated plainly: this reads a single point-in-time
+        snapshot of the local ARP table. It won't catch spoofing on a
+        remote/routed network, VLAN-hopping, or attacks that don't touch
+        ARP at all (e.g. a rogue DHCP server, or MITM further upstream).
+        """
+        print("[*] Checking ARP table for spoofing indicators...")
+        findings = []
+
+        try:
+            result = subprocess.run(['ip', 'neigh'], capture_output=True, text=True)
+            lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
+        except Exception:
+            try:
+                result = subprocess.run(['arp', '-an'], capture_output=True, text=True)
+                lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
+            except Exception as e:
+                print(f"[!] ARP Spoofing Check: {e}")
+                return findings
+
+        ip_to_macs = {}
+        for line in lines:
+            ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+            mac_match = re.search(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', line)
+            if ip_match and mac_match:
+                ip = ip_match.group(1)
+                mac = mac_match.group(1).lower()
+                ip_to_macs.setdefault(ip, set()).add(mac)
+
+        for ip, macs in ip_to_macs.items():
+            if len(macs) > 1:
+                findings.append(f"Possible ARP spoofing: {ip} mapped to {len(macs)} different MAC addresses ({', '.join(macs)})")
+                print(f"[!] ALERT: {ip} has {len(macs)} conflicting MAC addresses in ARP table")
+
+        if not findings:
+            print(f"[+] ARP Spoofing Check: No conflicts found ({len(ip_to_macs)} host(s) in ARP table)")
+
+        return findings
+    
     @staticmethod
     def _extract_ip(address_port):
         """Extract the IP portion from an ss-style 'address:port' token,
@@ -1154,6 +1506,111 @@ class MalwareDetector:
             return suspicious_processes
         except:
             return []
+
+    def analyze_kernel_modules(self):
+        """Flag loaded kernel modules that don't exist in the on-disk module tree.
+
+        README previously listed "Kernel Module Analysis" with no code
+        behind it. Every legitimately loaded module should have a
+        corresponding .ko/.ko.xz file somewhere under
+        /lib/modules/$(uname -r)/. A module present in `lsmod` but with no
+        matching file on disk is a real, well-known indicator used by
+        lightweight rootkit checkers - it's how some LKM-based rootkits
+        that only exist in kernel memory (not on disk) can be spotted.
+
+        Scope limit stated plainly: this only catches modules missing
+        their on-disk file. A rootkit module that DOES drop a same-named
+        file, or one that hides itself from `lsmod` entirely, will not be
+        caught by this check - it's one heuristic signal, not a full
+        rootkit scanner.
+        """
+        print("[*] Analyzing loaded kernel modules...")
+        flagged = []
+
+        try:
+            uname = subprocess.run(['uname', '-r'], capture_output=True, text=True)
+            kernel_version = uname.stdout.strip()
+            module_dir = f'/lib/modules/{kernel_version}'
+
+            lsmod = subprocess.run(['lsmod'], capture_output=True, text=True)
+            loaded_modules = [
+                line.split()[0] for line in lsmod.stdout.strip().split('\n')[1:] if line.strip()
+            ]
+
+            find_result = subprocess.run(
+                ['find', module_dir, '-name', '*.ko*'],
+                capture_output=True, text=True, timeout=10
+            )
+            on_disk_names = set()
+            for path in find_result.stdout.strip().split('\n'):
+                if path:
+                    base = os.path.basename(path).split('.ko')[0].replace('-', '_')
+                    on_disk_names.add(base)
+
+            for module in loaded_modules:
+                if module.replace('-', '_') not in on_disk_names and on_disk_names:
+                    flagged.append(f"Module '{module}' is loaded but has no matching file under {module_dir}")
+                    print(f"[!] SUSPICIOUS: kernel module '{module}' not found on disk")
+
+            print(f"[+] Kernel Module Analysis: {len(loaded_modules)} loaded, {len(flagged)} flagged")
+        except Exception as e:
+            print(f"[!] Kernel Module Analysis: {e}")
+
+        return flagged
+
+    def check_rootkit_indicators(self):
+        """Check a small set of well-known basic rootkit indicators.
+
+        README previously listed "Rootkit Detection" with no code behind
+        it. This is NOT a rootkit scanner - real tools for that job are
+        rkhunter and chkrootkit, and Option 15's suggestions already
+        recommend them. What this does check, honestly:
+
+        1. Process-count discrepancy: compares how many processes `ps`
+           reports against how many PID directories exist under /proc.
+           A mismatch is a classic (if old) sign of a process-hiding
+           rootkit, since some rootkits hook the syscalls `ps` relies on
+           but can't as easily hide entries from /proc itself.
+        2. A short list of historically well-known rootkit file paths.
+
+        A clean result here does NOT mean the system is free of rootkits
+        - most modern rootkits defeat both of these checks. This is a
+        cheap first-pass signal, not a guarantee.
+        """
+        print("[*] Checking basic rootkit indicators...")
+        findings = []
+
+        try:
+            ps_result = subprocess.run(['ps', '-e'], capture_output=True, text=True)
+            ps_count = max(len(ps_result.stdout.strip().split('\n')) - 1, 0)
+
+            proc_pids = [d for d in os.listdir('/proc') if d.isdigit()]
+            proc_count = len(proc_pids)
+
+            diff = abs(proc_count - ps_count)
+            if proc_count > 0 and diff > max(5, proc_count * 0.1):
+                findings.append(
+                    f"Process count mismatch: ps shows {ps_count}, /proc shows {proc_count} "
+                    f"(possible process-hiding rootkit)"
+                )
+                print(f"[!] ALERT: process count mismatch (ps={ps_count}, /proc={proc_count})")
+            else:
+                print(f"[+] Process count consistent (ps={ps_count}, /proc={proc_count})")
+        except Exception as e:
+            print(f"[!] Process count check failed: {e}")
+
+        known_rootkit_paths = [
+            '/usr/lib/.rootkit', '/usr/lib/.libselinux', '/dev/.udev.db',
+            '/dev/shm/.mount', '/usr/share/.aptitude', '/etc/rc.d/rc.local.d',
+        ]
+        found_paths = [p for p in known_rootkit_paths if os.path.exists(p)]
+        if found_paths:
+            findings.append(f"Known suspicious path(s) present: {', '.join(found_paths)}")
+            print(f"[!] ALERT: suspicious path(s) found: {', '.join(found_paths)}")
+        else:
+            print("[+] No known suspicious rootkit paths found")
+
+        return findings
 
 
 class UserActivityAuditor:
