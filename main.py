@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Cyber-Defense-Shield v1.4
-Advanced Cyber Security Defense & Protection Tool
+Multi-Layered Security Tool for Linux Systems
 Main Application Controller
 """
 
@@ -59,7 +59,7 @@ class CyberDefenseShield:
         banner = """
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                                                                           ║
-║          🛡️  CYBER-DEFENSE-SHIELD v1.4 - Advanced Security Tool 🛡️        ║
+║             🛡️  CYBER-DEFENSE-SHIELD v1.4 - Linux Security Tool 🛡️        ║
 ║                                                                           ║
 ║              Multi-Layered Cybersecurity Defense System                   ║
 ║                   Kali Linux / Debian-Based Linux                         ║
