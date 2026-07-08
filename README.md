@@ -1,6 +1,6 @@
 # Cyber-Defense-Shield v1.4
 
-Advanced Cyber Security Defense & Protection Tool for Linux Systems
+Multi-Layered Security Tool for Linux Systems
 
 ![Version](https://img.shields.io/badge/version-1.4-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -8,7 +8,7 @@ Advanced Cyber Security Defense & Protection Tool for Linux Systems
 
 ## Overview
 
-Cyber-Defense-Shield is a comprehensive, enterprise-grade cybersecurity defense tool designed for Linux systems. It provides multi-layered protection against various cyber attacks including DDoS, DoS, XSS, SQL injection, malware, and other sophisticated threats.
+Cyber-Defense-Shield is a practical, multi-layered defense tool for Linux systems. It combines firewall management, system hardening, and lightweight detection - DDoS/DoS mitigation, intrusion detection, basic malware/rootkit indicators, and web attack log scanning - into a single command-line tool with an optional background daemon. See [Limitations](#limitations) below for what it deliberately does not try to be.
 
 ## Key Features
 
@@ -61,7 +61,7 @@ Cyber-Defense-Shield is a comprehensive, enterprise-grade cybersecurity defense 
 - Alert Generation: Immediate notification of threats
 
 ### 📊 Advanced Features
-- HTML Report Generation: Professional security reports
+- HTML Report Generation: Styled, readable HTML security reports
 - Threat Severity Classification: Rate threat severity levels
 - Recommendations Engine: Provide actionable security recommendations
 - Multi-layered Defense: Network, protocol, system, and application levels
@@ -638,7 +638,7 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
 
 Cyber-Rage Security Team
 
-Advanced Cybersecurity Defense Solutions
+Open-source, MIT-licensed Linux security tooling.
 
 ### Team Members
 - Security Architecture
