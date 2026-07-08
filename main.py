@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cyber-Defense-Shield v1.3
+Cyber-Defense-Shield v1.4
 Advanced Cyber Security Defense & Protection Tool
 Main Application Controller
 """
@@ -59,7 +59,7 @@ class CyberDefenseShield:
         banner = """
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                                                                           ║
-║          🛡️  CYBER-DEFENSE-SHIELD v1.3 - Advanced Security Tool 🛡️        ║
+║          🛡️  CYBER-DEFENSE-SHIELD v1.4 - Advanced Security Tool 🛡️        ║
 ║                                                                           ║
 ║              Multi-Layered Cybersecurity Defense System                   ║
 ║                   Kali Linux / Debian-Based Linux                         ║
