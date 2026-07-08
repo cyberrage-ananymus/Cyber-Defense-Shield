@@ -4,6 +4,8 @@
 Configuration Settings - Cyber-Defense-Shield
 """
 
+import os
+
 # ============================================
 # FIREWALL CONFIGURATION
 # ============================================
@@ -175,6 +177,7 @@ NETWORK_SECURITY = {
     'enable_source_route_check': True,
     'tcp_max_syn_backlog': 2048,
 }
+ICMP_RATE_LIMIT_PER_SECOND = 10
 
 # ============================================
 # SYSTEM HARDENING SETTINGS
@@ -186,6 +189,16 @@ SYSTEM_HARDENING = {
     'enable_process_accounting': True,
     'enable_audit': True,
 }
+
+# ============================================
+# EXPECTED SERVICES (Optional Allowlist)
+# ============================================
+# Leave empty to just list running services without flagging anything
+# (safe default - no baseline means no false "unauthorized" positives).
+# Populate with your system's normal service names to enable allowlist
+# checking, e.g.:
+#   EXPECTED_SERVICES = ['ssh', 'cron', 'rsyslog', 'systemd-resolved', 'dbus', 'ufw']
+EXPECTED_SERVICES = []
 
 # ============================================
 # ATTACK PATTERNS SIGNATURES
@@ -208,6 +221,14 @@ ATTACK_PATTERNS = {
         '../',
         '..\\',
         '%2e%2e/',
+    ],
+    'COMMAND_INJECTION': [
+        '; cat ',
+        '; rm -rf',
+        '| nc ',
+        '&& wget ',
+        '$(', 
+        '`curl ',
     ],
 }
 
@@ -338,17 +359,29 @@ DAEMON_SCAN_INTERVAL_SECONDS = 300  # seconds between automated check cycles
 # Create a bot via @BotFather to get a bot_token, then message the bot
 # and check https://api.telegram.org/bot<token>/getUpdates to find your
 # chat_id.
+#
+# SECURITY: this repo is public. Do NOT hardcode a real bot_token/chat_id
+# below and commit it - anyone who reads the repo would have your bot's
+# credentials. Set these as environment variables on the server instead
+# (e.g. in the systemd unit's Environment= lines, or your shell profile):
+#   export CDS_TELEGRAM_BOT_TOKEN="..."
+#   export CDS_TELEGRAM_CHAT_ID="..."
+# The hardcoded fallback strings below stay empty on purpose.
 TELEGRAM_CONFIG = {
     'enabled': False,
-    'bot_token': '',
-    'chat_id': '',
+    'bot_token': os.environ.get('CDS_TELEGRAM_BOT_TOKEN', ''),
+    'chat_id': os.environ.get('CDS_TELEGRAM_CHAT_ID', ''),
 }
 
 # ============================================
 # DISCORD ALERTS (Optional)
 # ============================================
 # Server Settings -> Integrations -> Webhooks -> New Webhook -> Copy URL.
+#
+# SECURITY: same warning as above - a webhook URL is a bearer credential.
+# Set CDS_DISCORD_WEBHOOK_URL as an environment variable rather than
+# pasting the real URL into this file.
 DISCORD_CONFIG = {
     'enabled': False,
-    'webhook_url': '',
+    'webhook_url': os.environ.get('CDS_DISCORD_WEBHOOK_URL', ''),
 }
