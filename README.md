@@ -1,8 +1,8 @@
-# Cyber-Defense-Shield v1.3
+# Cyber-Defense-Shield v1.4
 
 Advanced Cyber Security Defense & Protection Tool for Linux Systems
 
-![Version](https://img.shields.io/badge/version-1.3-blue.svg)
+![Version](https://img.shields.io/badge/version-1.4-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 
@@ -65,8 +65,6 @@ Cyber-Defense-Shield is a comprehensive, enterprise-grade cybersecurity defense 
 - Threat Severity Classification: Rate threat severity levels
 - Recommendations Engine: Provide actionable security recommendations
 - Multi-layered Defense: Network, protocol, system, and application levels
-- Compliance Checking: CIS Benchmark compliance verification
-- Historical Analysis: Track security trends over time
 
 ## System Requirements
 
@@ -237,19 +235,33 @@ if you didn't install to `/opt/Cyber-Defense-Shield`.
 ### Telegram / Discord Alerts
 
 Daemon mode can push findings to Telegram and/or Discord instead of
-only logging locally. Both are optional and off by default. Configure
-either (or both) in `config.py`:
+only logging locally. Both are optional and off by default.
+
+**Recommended (keeps credentials out of the public repo):** set these
+as environment variables wherever the daemon actually runs - e.g. in
+`cyber-defense-shield.service` (see the commented `Environment=` lines
+already in that file):
+
+export CDS_TELEGRAM_BOT_TOKEN="your-bot-token-from-BotFather"
+export CDS_TELEGRAM_CHAT_ID="your-chat-id"
+export CDS_DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+
+Then flip `'enabled': True` for whichever channel(s) you're using in
+`config.py`:
 
 TELEGRAM_CONFIG = {
-    'enabled': True,
-    'bot_token': 'your-bot-token-from-BotFather',
-    'chat_id': 'your-chat-id',
+    'enabled': True,   # bot_token/chat_id are read from env vars above
+    ...
 }
 
 DISCORD_CONFIG = {
-    'enabled': True,
-    'webhook_url': 'https://discord.com/api/webhooks/...',
+    'enabled': True,   # webhook_url is read from the env var above
+    ...
 }
+
+**Do not paste a real bot token or webhook URL directly into
+config.py** if this repo (or your fork) is public - anyone who reads
+the file would have your credentials.
 
 To get a Telegram `chat_id`: message your bot once, then visit
 `https://api.telegram.org/bot<your-bot-token>/getUpdates` and read the
@@ -277,6 +289,9 @@ PERMIT_ROOT_LOGIN = False
 
 # Dangerous ports to block
 DANGEROUS_PORTS = [21, 23, 69, 135, 139, 445, ...]
+
+# Allowlist for Option 1's running-service check (empty = list-only, no flagging)
+EXPECTED_SERVICES = ['ssh', 'cron', 'rsyslog', 'ufw']
 
 # Email alerts (optional)
 EMAIL_CONFIG = {
@@ -354,18 +369,19 @@ Core security modules implementing protection mechanisms.
 Classes:
 - SecurityScanner: System security scanning
 - NetworkMonitor: Network monitoring and analysis
-- DDosProtector: DDoS/DoS protection
+- DDosProtector: DDoS/DoS protection (rate limiting, SYN/UDP/ICMP flood, anti-spoofing)
 - FirewallManager: Firewall configuration
-- SystemHardener: System security hardening
-- LogAnalyzer: Log analysis and threat detection
+- SystemHardener: System security hardening (SSH, sudo, services, syscall-level audit rules)
+- LogAnalyzer: Log analysis, attack pattern detection, syscall audit event queries
 - RealtimeThreatDetector: Real-time monitoring
 - ReportGenerator: Report generation
 - VulnerabilityScanner: Known vulnerability / outdated package checks
-- IntrusionDetectionSystem: Per-source IDS (port scan, SYN flood, brute force)
-- MalwareDetector: Suspicious file / process detection
+- IntrusionDetectionSystem: Per-source IDS (port scan, SYN flood, brute force, ARP spoofing/MITM)
+- MalwareDetector: Suspicious file/process detection, kernel module analysis, basic rootkit indicators
 - UserActivityAuditor: Login and privilege escalation auditing
 - AdvancedReporter: Comprehensive HTML reporting
 - AlertNotifier: Sends findings to Telegram/Discord (used by --daemon)
+- WebAttackScanner: SQLi/XSS/path-traversal/command-injection signature scan against web server access logs (Option 15)
 
 ### config.py
 Configuration settings for all protection mechanisms.
@@ -387,33 +403,41 @@ Settings:
 ### DDoS/DoS Attacks
 - SYN Flood Protection
 - UDP Flood Protection
-- ICMP Flood Protection
-- Rate Limiting
+- ICMP Flood Protection (Option 3)
+- Rate Limiting (per-source IP)
 - Traffic Analysis
 
 ### Network Attacks
 - Port Scanning Detection
 - Suspicious Connection Detection
-- IP Spoofing Detection
-- Man-in-the-Middle Detection
+- IP Spoofing Protection (kernel reverse-path filtering, Option 3)
+- ARP Spoofing / Man-in-the-Middle Detection (Option 10 - basic, single-snapshot ARP table check)
 
 ### Application Attacks
-- SQL Injection Detection
-- XSS Attack Detection
-- Path Traversal Detection
-- Command Injection Detection
+- SQL Injection Detection (access log signature scan, Option 15)
+- XSS Attack Detection (access log signature scan, Option 15)
+- Path Traversal Detection (access log signature scan, Option 15)
+- Command Injection Detection (access log signature scan, Option 15)
 
 ### Malware & Backdoors
 - Suspicious Process Detection
-- Rootkit Detection
-- Kernel Module Analysis
-- System Call Monitoring
+- Basic Rootkit Indicators (Option 11 - process-count discrepancy + known-path check; not a substitute for rkhunter/chkrootkit)
+- Kernel Module Analysis (Option 11 - flags modules loaded but missing from disk)
+- System Call Monitoring (Option 5 enables; Option 6 queries - real auditd syscall rules on execve/connect)
 
 ### Unauthorized Access
 - Failed Login Monitoring
-- Brute Force Attack Detection
-- Unauthorized Service Detection
+- Brute Force Attack Detection (time-windowed)
+- Running Service Review (Option 1 - allowlist-based if you populate EXPECTED_SERVICES in config.py)
 - Privilege Escalation Detection
+
+**On honesty about scope:** every item above now has real code behind
+it (no more capabilities that were just text in this README). That
+said, several are intentionally lightweight heuristics, not
+replacements for dedicated tools - the docstring on each method in
+defense_modules.py says plainly what it does and does not catch.
+Rootkit/kernel-module checks in particular are a basic first-pass
+signal, not equivalent to rkhunter, chkrootkit, or a real EDR.
 
 ## Security Best Practices
 
@@ -517,6 +541,25 @@ For support and questions:
 
 ## Changelog
 
+### v1.4 (2026)
+- Every capability the README previously described with no code behind it now has a real, tested implementation:
+  - ICMP Flood Protection and IP Spoofing Protection (Option 3)
+  - ARP Spoofing / basic Man-in-the-Middle Detection (Option 10)
+  - Command Injection signatures added to the Option 15 web attack scan
+  - Kernel Module Analysis and basic Rootkit Indicators (Option 11)
+  - Real syscall-level audit rules via auditd (`execve`, `connect`) plus a query command (Option 5 to enable, Option 6 to check)
+  - Running Service review, with optional allowlist checking via `EXPECTED_SERVICES` in config.py (Option 1)
+- Fixed a pre-existing bug where `enable_audit_logging` printed "ENABLED" even when it failed or auditd wasn't installed
+- Daemon mode now also runs the web attack scan and ARP spoofing check each cycle
+- Full audit of every claim in "Threat Protection Capabilities" against the actual code - anything without a real implementation was either built for real (this release) or removed from the list
+- Web Attack Scan (Option 15) now tails the access log incrementally (tracks byte offset, rotation-aware) instead of re-reading and re-scanning the entire file every cycle - keeps daemon mode's cost proportional to recent traffic, not total log size, on a busy server
+
+### v1.3.1 (2026)
+- Added Web Attack Scan (Option 15): actually wires up the SQL_INJECTION/XSS/PATH_TRAVERSAL signatures in config.py's ATTACK_PATTERNS to a real check against nginx/apache access logs - these patterns previously existed in config.py but were never read by any code
+- Telegram/Discord alert credentials now read from environment variables (CDS_TELEGRAM_BOT_TOKEN, CDS_TELEGRAM_CHAT_ID, CDS_DISCORD_WEBHOOK_URL) instead of needing to be hardcoded in config.py, so they can't end up committed to the public repo by accident
+- Daemon mode now uses Python's `logging` module with size-based log rotation (5MB x 3 backups) instead of an unbounded manual file write
+- Daemon mode cycles now also run the Web Attack Scan
+
 ### v1.3 (2026)
 - Added `--daemon` mode: runs detection continuously in the background instead of only via the interactive menu, on a configurable interval (see cyber-defense-shield.service for systemd deployment)
 - Added optional Telegram and Discord alerts, sent automatically when daemon mode finds something actionable (both off by default, stdlib-only, no new dependency)
@@ -546,6 +589,8 @@ For support and questions:
 
 ## Roadmap
 
+- CIS Benchmark compliance checking (a real subset of controls, not just the current unused `COMPLIANCE` config flag)
+- Historical trend tracking across scans (needs persistent storage - currently every scan is stateless)
 - Machine learning threat detection
 - Cloud integration support
 - Mobile app for monitoring
@@ -597,7 +642,7 @@ Special thanks to:
 
 ---
 
-Version: 1.3
+Version: 1.4
 Last Updated: 2026
 Status: Active Development & Maintenance
 Maintained By: Cyber-Rage Security Team
