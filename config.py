@@ -178,6 +178,8 @@ NETWORK_SECURITY = {
     'tcp_max_syn_backlog': 2048,
 }
 ICMP_RATE_LIMIT_PER_SECOND = 10
+UDP_RATE_LIMIT_PER_SECOND = 50
+UDP_RATE_LIMIT_BURST = 100
 
 # ============================================
 # SYSTEM HARDENING SETTINGS
