@@ -219,6 +219,23 @@ menu - a monitoring loop silently reconfiguring your system on a timer
 is a different, much riskier feature than a monitoring loop that just
 watches and alerts.
 
+### Previewing changes with --dry-run
+
+Every state-changing action available from the interactive menu -
+firewall rules, SSH/sudo hardening, sysctls, service disabling, `apt-get
+upgrade` - can be previewed instead of applied:
+
+sudo python3 main.py --dry-run
+
+Detection and reporting run completely normally under `--dry-run`; only
+the mutating operations are simulated. Each one prints exactly what it
+would have run (or, for SSH/sudo hardening, validates the proposed
+config against a temporary file with `sshd -t`/`visudo -c` and tells you
+whether it would pass, without ever touching the real files). Nothing
+under `--dry-run` restarts a service, writes to `/etc`, or changes a
+sysctl. Combine with `--daemon` if you want to test a fresh deployment
+end-to-end before trusting it with real changes.
+
 ### Running as a systemd service
 
 A ready-to-use unit file is included: `cyber-defense-shield.service`.
@@ -344,6 +361,8 @@ Cyber-Defense-Shield/
 ├── config.py                        # Configuration settings
 ├── requirements.txt                 # Python dependencies
 ├── cyber-defense-shield.service     # systemd unit for --daemon mode
+├── tests/
+│   └── test_defense_modules.py      # Core logic tests (unittest, stdlib only)
 ├── README.md                        # This file
 └── .gitignore                       # Git ignore file
 
@@ -525,6 +544,21 @@ Unauthorized access to computer systems is illegal. Users are solely responsible
 - Responsible and ethical use of the tool
 - Consequences of misuse
 
+## Testing
+
+A basic test suite covers the core detection/parsing logic (web attack
+scanning + incremental log tailing, ARP spoofing detection, kernel
+module comparison, config validation, `--dry-run`'s command interception)
+using only the standard library's `unittest`/`unittest.mock` - no test
+dependency to install, no root or real system tools required to run:
+
+python3 -m unittest tests.test_defense_modules -v
+
+This is not full coverage of every method (many wrap subprocess calls
+to system tools in ways that are more meaningfully tested by hand on a
+real Kali/Debian box), but it does cover the pieces where a wrong
+result matters most and where pure logic can be tested in isolation.
+
 ## Contributing
 
 Contributions are welcome! Please ensure:
@@ -567,6 +601,13 @@ For support and questions:
 - Report generation (Options 8/13) now includes the v1.4 checks (rootkit indicators, kernel modules, ARP spoofing, running services), not just the original v1.3 set
 - Removed two README claims that weren't backed by code ("deep packet inspection", "automatic real-time mitigation") and rewrote Performance Considerations / Limitations with specifics instead of generic boilerplate
 - Fixed a version-string inconsistency: some code comments/banners still said v1.3 after the README had already moved to v1.4
+- Fixed `enable_udp_flood_protection`: it called a sysctl key (`net.ipv4.udp_ratelimit`) that does not exist in the Linux kernel (verified against kernel.org's ip-sysctl docs) and always claimed "ENABLED" regardless of the (always-failing) result. Replaced with a real per-source iptables hashlimit rule, the same mechanism already used for TCP/ICMP
+- Removed remaining marketing language across the README, banner, and generated HTML reports ("enterprise-grade", "Advanced Security Tool", "Professional reports", hardcoded/inaccurate "100% Coverage" and module-count metrics) in favor of accurate, specific descriptions
+- **Security fix:** the file integrity baseline moved from `/var/tmp` (predictable, often world-writable) to `/var/lib/cyber-defense-shield` - a local attacker who could write to the old location could update the baseline to match their own tampering and defeat the check entirely
+- Added `--dry-run`: previews every state-changing action (firewall rules, SSH/sudo hardening, sysctls, service changes, `apt-get upgrade`) without applying it; detection/reporting still run normally. SSH/sudo hardening validate the *proposed* config against a temp file (`sshd -t` / `visudo -c`) so dry-run tells you whether it would actually pass, not just what command would run
+- Added `config.py` validation at startup - catches wrong types/values (e.g. a threshold set to a string, a negative rate limit) with a clear message instead of a confusing traceback deep inside some method
+- Added a basic test suite (`tests/test_defense_modules.py`, stdlib `unittest` only) covering web-attack-scan tailing/rotation, ARP spoofing detection, kernel module comparison, config validation, and `--dry-run`'s command interception
+- Documented an optional, reduced-privilege systemd configuration for `--daemon` (capabilities instead of full root) in `cyber-defense-shield.service` - commented out by default since it needs verification on your specific distro, but available for anyone who wants it
 
 ### v1.3.1 (2026)
 - Added Web Attack Scan (Option 15): actually wires up the SQL_INJECTION/XSS/PATH_TRAVERSAL signatures in config.py's ATTACK_PATTERNS to a real check against nginx/apache access logs - these patterns previously existed in config.py but were never read by any code
