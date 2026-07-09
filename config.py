@@ -387,3 +387,48 @@ DISCORD_CONFIG = {
     'enabled': False,
     'webhook_url': os.environ.get('CDS_DISCORD_WEBHOOK_URL', ''),
 }
+
+
+def validate_config():
+    """Sanity-check the settings above at startup, catch typos/wrong types early.
+
+    Suggested independently across reviews. Without this, a malformed
+    setting (e.g. RATE_LIMITED_PORTS accidentally set to a string instead
+    of a list) doesn't fail clearly - it fails confusingly, deep inside
+    whatever method first tries to iterate/compare it, with a traceback
+    that doesn't point back to the actual mistake in config.py. This
+    checks types and basic sanity for the settings most likely to be
+    hand-edited, and returns a list of human-readable problems (empty
+    list = all clear) instead of raising, so callers can decide whether
+    to warn-and-continue or abort.
+    """
+    problems = []
+
+    def _expect_type(name, value, expected_type, extra_check=None):
+        if not isinstance(value, expected_type):
+            problems.append(f"{name} should be a {expected_type.__name__}, got {type(value).__name__}")
+        elif extra_check is not None and not extra_check(value):
+            problems.append(f"{name} failed validation")
+
+    _expect_type('RATE_LIMIT_PER_MINUTE', RATE_LIMIT_PER_MINUTE, int, lambda v: v > 0)
+    _expect_type('RATE_LIMIT_BURST', RATE_LIMIT_BURST, int, lambda v: v > 0)
+    _expect_type('RATE_LIMITED_PORTS', RATE_LIMITED_PORTS, list,
+                 lambda v: all(isinstance(p, int) and 1 <= p <= 65535 for p in v))
+    _expect_type('DANGEROUS_PORTS', DANGEROUS_PORTS, list)
+    _expect_type('EXPECTED_SERVICES', EXPECTED_SERVICES, list)
+    _expect_type('SUSPICIOUS_IP_CONNECTION_THRESHOLD', SUSPICIOUS_IP_CONNECTION_THRESHOLD, int, lambda v: v > 0)
+    _expect_type('SYN_RECV_PER_SOURCE_THRESHOLD', SYN_RECV_PER_SOURCE_THRESHOLD, int, lambda v: v > 0)
+    _expect_type('BRUTE_FORCE_ATTEMPTS_THRESHOLD', BRUTE_FORCE_ATTEMPTS_THRESHOLD, int, lambda v: v > 0)
+    _expect_type('BRUTE_FORCE_WINDOW_MINUTES', BRUTE_FORCE_WINDOW_MINUTES, int, lambda v: v > 0)
+    _expect_type('DAEMON_SCAN_INTERVAL_SECONDS', DAEMON_SCAN_INTERVAL_SECONDS, int, lambda v: v >= 10)
+    _expect_type('ATTACK_PATTERNS', ATTACK_PATTERNS, dict,
+                 lambda v: all(isinstance(sigs, list) for sigs in v.values()))
+    _expect_type('TELEGRAM_CONFIG', TELEGRAM_CONFIG, dict, lambda v: 'enabled' in v)
+    _expect_type('DISCORD_CONFIG', DISCORD_CONFIG, dict, lambda v: 'enabled' in v)
+
+    if TELEGRAM_CONFIG.get('enabled') and not (TELEGRAM_CONFIG.get('bot_token') and TELEGRAM_CONFIG.get('chat_id')):
+        problems.append("TELEGRAM_CONFIG['enabled'] is True but bot_token/chat_id are empty - set CDS_TELEGRAM_BOT_TOKEN / CDS_TELEGRAM_CHAT_ID")
+    if DISCORD_CONFIG.get('enabled') and not DISCORD_CONFIG.get('webhook_url'):
+        problems.append("DISCORD_CONFIG['enabled'] is True but webhook_url is empty - set CDS_DISCORD_WEBHOOK_URL")
+
+    return problems
