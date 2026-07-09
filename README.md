@@ -100,16 +100,16 @@ Cyber-Defense-Shield is a practical, multi-layered defense tool for Linux system
 git clone https://github.com/cyberrage-ananymus/Cyber-Defense-Shield.git
 cd Cyber-Defense-Shield
 ```
-```
 ### Step 2: Install Dependencies
+```
 sudo pip3 install -r requirements.txt
 ```
-```
 ### Step 3: Verify Installation
+```
 sudo python3 main.py --version
 ```
-```
 ### Step 4: Run the Tool
+```
 sudo python3 main.py
 ```
 ## Usage
