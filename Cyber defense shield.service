@@ -10,10 +10,31 @@ ExecStart=/usr/bin/python3 /opt/Cyber-Defense-Shield/main.py --daemon
 Restart=on-failure
 RestartSec=10
 
+# Optional: Telegram/Discord alert credentials. Set them here (not in
+# config.py) so they never end up committed to the public repo.
+#Environment="CDS_TELEGRAM_BOT_TOKEN=your-bot-token"
+#Environment="CDS_TELEGRAM_CHAT_ID=your-chat-id"
+#Environment="CDS_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/..."
+
 # Detection needs root for ss/ufw/auditctl/etc. If you lock this down
 # further with a dedicated user, several checks will silently report
 # "Requires root access" instead of failing outright.
 User=root
+
+# --- Optional: reduced-privilege alternative (advanced, untested on
+# your specific distro - verify before relying on it) ---
+# Daemon mode (--daemon) only ever runs detection, never the
+# firewall/hardening menu options, so it does not need full root the
+# way the interactive menu does. Instead of User=root above, you could
+# try running as a dedicated user with just the capabilities detection
+# actually needs:
+#User=cyber-defense-shield
+#AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_READ_SEARCH CAP_AUDIT_CONTROL CAP_AUDIT_READ
+#CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_READ_SEARCH CAP_AUDIT_CONTROL CAP_AUDIT_READ
+#NoNewPrivileges=true
+# If a specific check still reports "Requires root access" under this
+# setup, that check needs a capability not listed above - either add it
+# or fall back to User=root.
 
 [Install]
 WantedBy=multi-user.target
