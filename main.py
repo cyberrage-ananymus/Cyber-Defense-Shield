@@ -14,6 +14,7 @@ import time
 import logging
 import logging.handlers
 from datetime import datetime
+import defense_modules
 from defense_modules import (
     SecurityScanner,
     NetworkMonitor,
@@ -630,12 +631,32 @@ def parse_args():
         '--interval', type=int, default=None,
         help='Seconds between check cycles in --daemon mode (default: from config.py, or 300)'
     )
+    parser.add_argument(
+        '--dry-run', action='store_true',
+        help='Preview every state-changing action (firewall rules, sshd_config, sudoers, sysctls, service changes, apt upgrade) without actually applying it. Detection/reporting still runs normally - only mutations are simulated.'
+    )
     return parser.parse_args()
 
 
 def main():
     """Main entry point"""
     args = parse_args()
+
+    try:
+        import config as _cfg_mod
+        problems = _cfg_mod.validate_config()
+        if problems:
+            print("[!] config.py validation warnings (continuing with these settings anyway):")
+            for p in problems:
+                print(f"    - {p}")
+            print()
+    except Exception as e:
+        print(f"[!] Could not validate config.py: {e}\n")
+
+    if args.dry_run:
+        defense_modules.set_dry_run(True)
+        print("[*] --dry-run enabled: state-changing actions will be previewed, not applied.\n")
+
     app = CyberDefenseShield()
 
     if args.daemon:
