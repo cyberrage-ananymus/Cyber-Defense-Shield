@@ -37,6 +37,50 @@ def _cfg(name, default):
     return getattr(_config, name, default) if _config is not None else default
 
 
+DRY_RUN = False
+
+
+def set_dry_run(enabled):
+    """Enable/disable dry-run mode for every state-changing operation in
+    this module. Called once from main.py at startup based on --dry-run.
+    """
+    global DRY_RUN
+    DRY_RUN = enabled
+
+
+def _exec(cmd, **kwargs):
+    """Run a state-CHANGING subprocess command, or preview it under --dry-run.
+
+    Only used for calls that actually modify system state (firewall
+    rules, sysctls, service start/stop, package upgrades) - read-only
+    calls (status checks, scans, `ss`/`ps`/log reads) keep calling
+    subprocess.run directly, since previewing a read has no meaning and
+    dry-run should never block detection/reporting from working.
+
+    Suggested twice across independent reviews: destructive operations
+    (sshd restart, service disable, apt upgrade, firewall changes) had no
+    way to preview what would happen before it happened. `--dry-run`
+    routes every one of those through here instead.
+    """
+    if DRY_RUN:
+        print(f"[DRY-RUN] Would run: {' '.join(cmd)}")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b'', stderr=b'')
+    return subprocess.run(cmd, **kwargs)
+
+
+def _write_file(path, content, mode='w'):
+    """Write to a file that represents a state change (config files,
+    sudoers.d drops, etc.), or preview it under --dry-run instead of
+    actually writing.
+    """
+    if DRY_RUN:
+        preview = content if len(content) < 200 else content[:200] + '...'
+        print(f"[DRY-RUN] Would write to {path}:\n{preview}")
+        return
+    with open(path, mode) as f:
+        f.write(content)
+
+
 class AlertNotifier:
     """Sends security alerts to Telegram and/or Discord.
 
@@ -470,7 +514,7 @@ class DDosProtector:
                     already_active.append(str(port))
                     continue
 
-                result = subprocess.run(['iptables', '-A', 'INPUT'] + rule_spec, capture_output=True)
+                result = _exec(['iptables', '-A', 'INPUT'] + rule_spec, capture_output=True)
                 if result.returncode == 0:
                     enabled_ports.append(str(port))
             except Exception:
@@ -481,7 +525,7 @@ class DDosProtector:
                 print(f"[+] Rate Limiting: ENABLED per-source ({rate}/minute, burst {burst}) on ports: {', '.join(enabled_ports)}")
             if already_active:
                 print(f"[+] Rate Limiting: Already active on ports: {', '.join(already_active)} (no duplicate rule added)")
-            if enabled_ports:
+            if enabled_ports and not DRY_RUN:
                 self._persist_iptables_rules()
         else:
             print("[!] Rate Limiting: Requires root access")
@@ -495,7 +539,8 @@ class DDosProtector:
         reboot, giving a false sense of protection. Tries
         netfilter-persistent first (the standard Debian/Kali mechanism);
         falls back to writing iptables-save output directly if that tool
-        isn't installed.
+        isn't installed. Never called under --dry-run (callers check
+        DRY_RUN first) since there is nothing real to persist yet.
         """
         try:
             result = subprocess.run(['netfilter-persistent', 'save'], capture_output=True, text=True)
@@ -529,8 +574,8 @@ class DDosProtector:
         """
         backlog = _cfg('NETWORK_SECURITY', {}).get('tcp_max_syn_backlog', 2048)
         try:
-            subprocess.run(['sysctl', '-w', 'net.ipv4.tcp_syncookies=1'], capture_output=True)
-            subprocess.run(['sysctl', '-w', f'net.ipv4.tcp_max_syn_backlog={backlog}'], capture_output=True)
+            _exec(['sysctl', '-w', 'net.ipv4.tcp_syncookies=1'], capture_output=True)
+            _exec(['sysctl', '-w', f'net.ipv4.tcp_max_syn_backlog={backlog}'], capture_output=True)
             print(f"[+] SYN Flood Protection: ENABLED (syncookies + backlog={backlog})")
         except Exception as e:
             print(f"[!] SYN Flood Protection: Requires root access")
@@ -567,10 +612,11 @@ class DDosProtector:
                 print(f"[+] UDP Flood Protection: Already active ({rate} packets/sec per source)")
                 return
 
-            result = subprocess.run(['iptables', '-A', 'INPUT'] + rule_spec, capture_output=True)
+            result = _exec(['iptables', '-A', 'INPUT'] + rule_spec, capture_output=True)
             if result.returncode == 0:
                 print(f"[+] UDP Flood Protection: ENABLED per-source ({rate} packets/sec, burst {burst})")
-                self._persist_iptables_rules()
+                if not DRY_RUN:
+                    self._persist_iptables_rules()
             else:
                 print("[!] UDP Flood Protection: Requires root access")
         except Exception as e:
@@ -592,7 +638,7 @@ class DDosProtector:
 
         try:
             if ignore_broadcasts:
-                subprocess.run(['sysctl', '-w', 'net.ipv4.icmp_echo_ignore_broadcasts=1'], capture_output=True)
+                _exec(['sysctl', '-w', 'net.ipv4.icmp_echo_ignore_broadcasts=1'], capture_output=True)
 
             rule_spec = [
                 '-p', 'icmp', '--icmp-type', 'echo-request',
@@ -601,14 +647,15 @@ class DDosProtector:
             ]
             check = subprocess.run(['iptables', '-C', 'INPUT'] + rule_spec, capture_output=True)
             if check.returncode != 0:
-                subprocess.run(['iptables', '-A', 'INPUT'] + rule_spec, capture_output=True)
+                _exec(['iptables', '-A', 'INPUT'] + rule_spec, capture_output=True)
                 # Anything over the limit falls through to this drop rule.
                 drop_spec = ['-p', 'icmp', '--icmp-type', 'echo-request', '-j', 'DROP']
                 drop_check = subprocess.run(['iptables', '-C', 'INPUT'] + drop_spec, capture_output=True)
                 if drop_check.returncode != 0:
-                    subprocess.run(['iptables', '-A', 'INPUT'] + drop_spec, capture_output=True)
+                    _exec(['iptables', '-A', 'INPUT'] + drop_spec, capture_output=True)
                 print(f"[+] ICMP Flood Protection: ENABLED (echo-request limited to {limit}/sec, broadcast pings ignored: {ignore_broadcasts})")
-                self._persist_iptables_rules()
+                if not DRY_RUN:
+                    self._persist_iptables_rules()
             else:
                 print(f"[+] ICMP Flood Protection: Already active ({limit}/sec limit)")
         except Exception as e:
@@ -634,12 +681,12 @@ class DDosProtector:
         applied = []
         try:
             if rp_filter:
-                subprocess.run(['sysctl', '-w', 'net.ipv4.conf.all.rp_filter=1'], capture_output=True)
-                subprocess.run(['sysctl', '-w', 'net.ipv4.conf.default.rp_filter=1'], capture_output=True)
+                _exec(['sysctl', '-w', 'net.ipv4.conf.all.rp_filter=1'], capture_output=True)
+                _exec(['sysctl', '-w', 'net.ipv4.conf.default.rp_filter=1'], capture_output=True)
                 applied.append('reverse-path filtering')
             if block_source_route:
-                subprocess.run(['sysctl', '-w', 'net.ipv4.conf.all.accept_source_route=0'], capture_output=True)
-                subprocess.run(['sysctl', '-w', 'net.ipv4.conf.default.accept_source_route=0'], capture_output=True)
+                _exec(['sysctl', '-w', 'net.ipv4.conf.all.accept_source_route=0'], capture_output=True)
+                _exec(['sysctl', '-w', 'net.ipv4.conf.default.accept_source_route=0'], capture_output=True)
                 applied.append('source-route rejection')
 
             if applied:
@@ -693,7 +740,7 @@ class FirewallManager:
     def enable_firewall(self):
         """Enable firewall"""
         try:
-            subprocess.run(['ufw', 'enable'], input=b'y\n', capture_output=True)
+            _exec(['ufw', 'enable'], input=b'y\n', capture_output=True)
             print("[+] UFW Firewall: ENABLED")
         except Exception as e:
             print(f"[!] Firewall: {e}")
@@ -710,7 +757,7 @@ class FirewallManager:
         
         for rule in rules:
             try:
-                subprocess.run(rule, capture_output=True)
+                _exec(rule, capture_output=True)
             except:
                 pass
         
@@ -721,7 +768,7 @@ class FirewallManager:
         dangerous_ports = ['23', '21', '69', '135', '139', '445', '3389']
         for port in dangerous_ports:
             try:
-                subprocess.run(['ufw', 'deny', port], capture_output=True)
+                _exec(['ufw', 'deny', port], capture_output=True)
             except:
                 pass
         
@@ -786,6 +833,25 @@ Protocol 2
                 print("[+] SSH Hardening: Already applied (skipping duplicate write)")
                 return
 
+            if DRY_RUN:
+                # Validate what WOULD be written against a temp copy, so
+                # --dry-run gives a real answer ("this would pass/fail
+                # sshd -t"), not just an echo of the diff, without ever
+                # touching the real config or restarting sshd.
+                import tempfile
+                proposed = content + ssh_config
+                with tempfile.NamedTemporaryFile('w', suffix='_sshd_config', delete=False) as tf:
+                    tf.write(proposed)
+                    tmp_path = tf.name
+                try:
+                    test = subprocess.run(['sshd', '-t', '-f', tmp_path], capture_output=True, text=True)
+                    verdict = "would PASS sshd -t validation" if test.returncode == 0 else f"would FAIL sshd -t validation: {test.stderr.strip()}"
+                finally:
+                    os.remove(tmp_path)
+                print(f"[DRY-RUN] Would back up {config_path}, append hardening block, then restart ssh.")
+                print(f"[DRY-RUN] Proposed config {verdict}.")
+                return
+
             # Keep exactly one backup of the pre-hardening state, taken
             # only the first time this ever runs on the system.
             if not os.path.exists(backup_path):
@@ -808,7 +874,7 @@ Protocol 2
                 print(f"[!] sshd -t said: {test.stderr.strip()}")
                 return
 
-            subprocess.run(['systemctl', 'restart', 'ssh'], capture_output=True)
+            _exec(['systemctl', 'restart', 'ssh'], capture_output=True)
             print("[+] SSH Hardening: COMPLETE")
         except FileNotFoundError:
             print(f"[!] SSH Hardening: {config_path} not found")
@@ -818,8 +884,8 @@ Protocol 2
     def update_system(self):
         """Update system packages"""
         try:
-            subprocess.run(['apt-get', 'update'], capture_output=True, timeout=30)
-            subprocess.run(['apt-get', 'upgrade', '-y'], capture_output=True, timeout=60)
+            _exec(['apt-get', 'update'], capture_output=True, timeout=30)
+            _exec(['apt-get', 'upgrade', '-y'], capture_output=True, timeout=60)
             print("[+] System Update: COMPLETE")
         except Exception as e:
             print(f"[!] System Update: {e}")
@@ -829,8 +895,8 @@ Protocol 2
         services = ['cups', 'avahi-daemon', 'isc-dhcp-server', 'snmpd', 'rsync']
         for service in services:
             try:
-                subprocess.run(['systemctl', 'disable', service], capture_output=True)
-                subprocess.run(['systemctl', 'stop', service], capture_output=True)
+                _exec(['systemctl', 'disable', service], capture_output=True)
+                _exec(['systemctl', 'stop', service], capture_output=True)
             except:
                 pass
         
@@ -856,6 +922,20 @@ Defaults timestamp_timeout=5
         try:
             if os.path.exists(sudoers_path):
                 print("[+] Sudo Hardening: Already applied (skipping)")
+                return
+
+            if DRY_RUN:
+                import tempfile
+                with tempfile.NamedTemporaryFile('w', suffix='_sudoers', delete=False) as tf:
+                    tf.write(sudo_config)
+                    tmp_path = tf.name
+                try:
+                    test = subprocess.run(['visudo', '-c', '-f', tmp_path], capture_output=True, text=True)
+                    verdict = "would PASS visudo validation" if test.returncode == 0 else f"would FAIL visudo validation: {test.stderr.strip()}"
+                finally:
+                    os.remove(tmp_path)
+                print(f"[DRY-RUN] Would create {sudoers_path} (mode 0440):\n{sudo_config}")
+                print(f"[DRY-RUN] Proposed config {verdict}.")
                 return
 
             with open(sudoers_path, 'w') as f:
@@ -901,12 +981,13 @@ Defaults timestamp_timeout=5
         applied = []
         try:
             for rule_cmd, label in rules:
-                result = subprocess.run(rule_cmd, capture_output=True, text=True)
+                result = _exec(rule_cmd, capture_output=True, text=True)
                 if result.returncode == 0:
                     applied.append(label)
 
             if applied:
-                print(f"[+] Audit Logging: ENABLED ({len(applied)}/{len(rules)} rules applied)")
+                verb = "Would enable" if DRY_RUN else "ENABLED"
+                print(f"[{'DRY-RUN' if DRY_RUN else '+'}] Audit Logging: {verb} ({len(applied)}/{len(rules)} rules)")
                 for label in applied:
                     print(f"    - {label}")
             else:
@@ -1541,7 +1622,7 @@ class MalwareDetector:
         print(f"[+] Suspicious Files Found: {len(suspicious_files)}")
         return suspicious_files
     
-    BASELINE_FILE = '/var/tmp/.cds_file_baseline.json'
+    BASELINE_FILE = '/var/lib/cyber-defense-shield/file_baseline.json'
 
     def check_file_hashes(self):
         """Check file integrity against a stored baseline, real drift detection.
@@ -1562,6 +1643,13 @@ class MalwareDetector:
         time. If a detected change is legitimate (e.g. you edited
         sshd_config on purpose), delete BASELINE_FILE to re-establish
         trust at the current state.
+
+        Security note: an earlier version stored this baseline in
+        /var/tmp with default permissions - a predictable, world-
+        readable/writable-by-default location any local user could find
+        and overwrite to hide their own tampering, defeating the entire
+        point of integrity checking. It now lives under /var/lib (root-
+        only by default) and the file itself is chmod'd 0600 on write.
         """
         print("[*] Checking file integrity...")
 
