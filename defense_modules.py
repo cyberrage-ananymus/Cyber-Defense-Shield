@@ -13,6 +13,7 @@ from datetime import datetime
 import hashlib
 import os
 import shutil
+import tempfile
 
 try:
     import config as _config
@@ -97,6 +98,8 @@ class AlertNotifier:
     def __init__(self):
         self.telegram = _cfg('TELEGRAM_CONFIG', {'enabled': False})
         self.discord = _cfg('DISCORD_CONFIG', {'enabled': False})
+        self.cooldown_seconds = _cfg('ALERT_COOLDOWN_SECONDS', 300)
+        self._last_sent_at = None
 
     def _send_telegram(self, message):
         if not self.telegram.get('enabled') or not self.telegram.get('bot_token') or not self.telegram.get('chat_id'):
@@ -137,11 +140,27 @@ class AlertNotifier:
 
         No-op if findings is empty (nothing worth alerting on) or if
         neither Telegram nor Discord is enabled/configured.
+
+        Rate-limited by ALERT_COOLDOWN_SECONDS (default 300s = 5 min):
+        suggested independently, since without a cooldown, a genuinely
+        noisy period (or just tight daemon --interval) could fire an
+        alert every single cycle and spam Telegram/Discord instead of
+        being useful signal. Findings are still logged to the
+        console/LOG_FILE every cycle regardless of cooldown - only the
+        push notification itself is throttled.
         """
         if not findings:
             return
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now()
+        if self._last_sent_at is not None:
+            elapsed = (now - self._last_sent_at).total_seconds()
+            if elapsed < self.cooldown_seconds:
+                remaining = int(self.cooldown_seconds - elapsed)
+                print(f"[*] Alert suppressed (cooldown active, {remaining}s remaining) - findings are still in the log")
+                return
+
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
         lines = [f"Cyber-Defense-Shield Alert - {title}", timestamp, ""]
         lines.extend(f"- {item}" for item in findings[:15])
         message = "\n".join(lines)
@@ -150,6 +169,7 @@ class AlertNotifier:
         sent_discord = self._send_discord(message)
 
         if sent_telegram or sent_discord:
+            self._last_sent_at = now
             channels = ', '.join(c for c, ok in [('Telegram', sent_telegram), ('Discord', sent_discord)] if ok)
             print(f"[+] Alert sent via {channels}")
         elif self.telegram.get('enabled') or self.discord.get('enabled'):
@@ -849,7 +869,6 @@ Protocol 2
                 # --dry-run gives a real answer ("this would pass/fail
                 # sshd -t"), not just an echo of the diff, without ever
                 # touching the real config or restarting sshd.
-                import tempfile
                 proposed = content + ssh_config
                 with tempfile.NamedTemporaryFile('w', suffix='_sshd_config', delete=False) as tf:
                     tf.write(proposed)
@@ -870,8 +889,25 @@ Protocol 2
                     bf.write(content)
                 print(f"[+] SSH Backup: Saved original config to {backup_path}")
 
-            with open(config_path, 'a') as f:
-                f.write(ssh_config)
+            # Atomic write: build the full new content, write it to a temp
+            # file in the same directory, then os.replace() into place.
+            # os.replace() is atomic on POSIX as long as source and dest
+            # are on the same filesystem (guaranteed here - same dir) - a
+            # process killed mid-write leaves the temp file incomplete but
+            # never touches the real sshd_config, unlike the previous
+            # plain append, where a kill at the wrong instant could leave
+            # sshd_config with a truncated/malformed line and no way to
+            # know until the next sshd restart failed.
+            new_content = content + ssh_config
+            fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(config_path), suffix='.cds_tmp')
+            try:
+                with os.fdopen(fd, 'w') as tf:
+                    tf.write(new_content)
+                os.replace(tmp_path, config_path)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise
 
             test = subprocess.run(['sshd', '-t'], capture_output=True, text=True)
             if test.returncode != 0:
@@ -879,8 +915,10 @@ Protocol 2
                 # rather than leaving a broken sshd_config in place.
                 with open(backup_path, 'r') as bf:
                     original = bf.read()
-                with open(config_path, 'w') as f:
+                fd2, tmp_path2 = tempfile.mkstemp(dir=os.path.dirname(config_path), suffix='.cds_restore')
+                with os.fdopen(fd2, 'w') as f:
                     f.write(original)
+                os.replace(tmp_path2, config_path)
                 print(f"[!] SSH Hardening: New config failed validation, restored backup.")
                 print(f"[!] sshd -t said: {test.stderr.strip()}")
                 return
@@ -936,7 +974,6 @@ Defaults timestamp_timeout=5
                 return
 
             if DRY_RUN:
-                import tempfile
                 with tempfile.NamedTemporaryFile('w', suffix='_sudoers', delete=False) as tf:
                     tf.write(sudo_config)
                     tmp_path = tf.name
@@ -949,15 +986,26 @@ Defaults timestamp_timeout=5
                 print(f"[DRY-RUN] Proposed config {verdict}.")
                 return
 
-            with open(sudoers_path, 'w') as f:
-                f.write(sudo_config)
-            os.chmod(sudoers_path, 0o440)
+            # Validate in a temp location FIRST, before /etc/sudoers.d/
+            # ever sees this file at all - safer than write-then-validate-
+            # then-maybe-remove, since a crash between writing and
+            # validating would otherwise leave an unvalidated file sitting
+            # in a place `sudo` actually reads on every invocation.
+            fd, tmp_path = tempfile.mkstemp(dir='/etc/sudoers.d', suffix='.cds_tmp')
+            try:
+                with os.fdopen(fd, 'w') as tf:
+                    tf.write(sudo_config)
+                os.chmod(tmp_path, 0o440)
 
-            check = subprocess.run(['visudo', '-c', '-f', sudoers_path], capture_output=True, text=True)
-            if check.returncode != 0:
-                os.remove(sudoers_path)
-                print(f"[!] Sudo Hardening: Invalid config rejected ({check.stderr.strip()})")
-                return
+                check = subprocess.run(['visudo', '-c', '-f', tmp_path], capture_output=True, text=True)
+                if check.returncode != 0:
+                    print(f"[!] Sudo Hardening: Invalid config rejected ({check.stderr.strip()})")
+                    return
+
+                os.replace(tmp_path, sudoers_path)  # atomic, same directory
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
 
             print("[+] Sudo Hardening: COMPLETE")
         except PermissionError:
@@ -1688,8 +1736,10 @@ class MalwareDetector:
 
         if baseline is None:
             try:
+                os.makedirs(os.path.dirname(self.BASELINE_FILE), mode=0o700, exist_ok=True)
                 with open(self.BASELINE_FILE, 'w') as f:
                     f.write(json.dumps(current_hashes))
+                os.chmod(self.BASELINE_FILE, 0o600)
                 print(f"[+] File Integrity: Baseline established for {len(current_hashes)} file(s) (nothing to compare yet)")
             except Exception as e:
                 print(f"[!] File Integrity: Could not save baseline ({e}); comparisons will not persist")
