@@ -311,6 +311,43 @@ class TestAtomicConfigWrite(unittest.TestCase):
         self.assertFalse(os.path.exists(tmp_path))
 
 
+class TestAlertRedaction(unittest.TestCase):
+    """AlertNotifier must mask likely secrets before a finding leaves the machine."""
+
+    def setUp(self):
+        self.notifier = dm.AlertNotifier()
+
+    def test_redacts_mysql_style_password_flag(self):
+        result = self.notifier._redact('mysqldump -pMySecretPassword123 -h localhost')
+        self.assertNotIn('MySecretPassword123', result)
+        self.assertIn('REDACTED', result)
+
+    def test_redacts_password_key_value(self):
+        result = self.notifier._redact('password=hunter2 in config')
+        self.assertNotIn('hunter2', result)
+
+    def test_redacts_bearer_token(self):
+        result = self.notifier._redact('Authorization: Bearer abc123xyz789')
+        self.assertNotIn('abc123xyz789', result)
+
+    def test_does_not_touch_space_separated_flag(self):
+        # "-p tcp" (iptables protocol flag) must survive - only the
+        # mysql-style no-space "-pVALUE" form is a password pattern.
+        text = 'iptables -p tcp --dport 443'
+        self.assertEqual(self.notifier._redact(text), text)
+
+    def test_does_not_touch_normal_finding_text(self):
+        text = 'SQL_INJECTION: 3 matching request(s) in /var/log/nginx/access.log'
+        self.assertEqual(self.notifier._redact(text), text)
+
+    def test_redaction_applied_in_actual_alert_message(self):
+        self.notifier.telegram = {'enabled': True, 'bot_token': 'x', 'chat_id': 'y'}
+        with patch.object(self.notifier, '_send_telegram', return_value=True) as mock_send:
+            self.notifier.send_alert('Test', ['proc: mysqld -pSuperSecret123'])
+            sent_message = mock_send.call_args[0][0]
+            self.assertNotIn('SuperSecret123', sent_message)
+
+
 class TestDryRun(unittest.TestCase):
     """--dry-run must never actually invoke a state-changing command."""
 
