@@ -21,6 +21,7 @@ or, from the tests/ directory:
 import os
 import sys
 import json
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -256,6 +257,60 @@ class TestConfigValidation(unittest.TestCase):
             config.RATE_LIMIT_PER_MINUTE = original
 
 
+class TestAtomicConfigWrite(unittest.TestCase):
+    """The temp-file + os.replace() pattern used by harden_ssh/harden_sudo
+    to avoid leaving a config file half-written if the process dies
+    mid-write (a plain open(path, 'a')/write() does not have this
+    guarantee - os.replace() does, as long as source and dest are on the
+    same filesystem, which mkstemp(dir=...) guarantees by construction).
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_path = os.path.join(self.tmpdir, 'fake_config')
+        with open(self.config_path, 'w') as f:
+            f.write('Port 22\nPermitRootLogin yes\n')
+
+    def tearDown(self):
+        import shutil as _shutil
+        _shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_atomic_write_preserves_old_and_new_content(self):
+        with open(self.config_path) as f:
+            original = f.read()
+
+        addition = '\n# --- test marker ---\nPermitRootLogin no\n'
+        new_content = original + addition
+
+        fd, tmp_path = tempfile.mkstemp(dir=self.tmpdir, suffix='.cds_tmp')
+        with os.fdopen(fd, 'w') as tf:
+            tf.write(new_content)
+        os.replace(tmp_path, self.config_path)
+
+        with open(self.config_path) as f:
+            final = f.read()
+
+        self.assertIn('PermitRootLogin yes', final)
+        self.assertIn('PermitRootLogin no', final)
+        self.assertFalse(os.path.exists(tmp_path), "temp file must not survive a successful replace")
+
+    def test_no_partial_file_left_behind_on_simulated_failure(self):
+        fd, tmp_path = tempfile.mkstemp(dir=self.tmpdir, suffix='.cds_tmp')
+        try:
+            with os.fdopen(fd, 'w') as tf:
+                tf.write('partial content...')
+            raise RuntimeError("simulated crash before os.replace()")
+        except RuntimeError:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+        with open(self.config_path) as f:
+            content = f.read()
+        self.assertEqual(content, 'Port 22\nPermitRootLogin yes\n',
+                          "original file must be untouched if the write never reached os.replace()")
+        self.assertFalse(os.path.exists(tmp_path))
+
+
 class TestDryRun(unittest.TestCase):
     """--dry-run must never actually invoke a state-changing command."""
 
@@ -275,6 +330,31 @@ class TestDryRun(unittest.TestCase):
             mock_run.return_value = MagicMock(returncode=0)
             dm._exec(['echo', 'hi'], capture_output=True)
             mock_run.assert_called_once()
+
+
+class TestAlertCooldown(unittest.TestCase):
+    """AlertNotifier must not spam Telegram/Discord every cycle."""
+
+    def test_second_alert_within_cooldown_is_suppressed(self):
+        notifier = dm.AlertNotifier()
+        notifier.cooldown_seconds = 9999  # effectively "never expires" for this test
+        notifier.telegram = {'enabled': True, 'bot_token': 'x', 'chat_id': 'y'}
+
+        with patch.object(notifier, '_send_telegram', return_value=True) as mock_send:
+            notifier.send_alert('First', ['a'])
+            notifier.send_alert('Second', ['b'])
+            self.assertEqual(mock_send.call_count, 1,
+                              "a second alert inside the cooldown window must not actually send")
+
+    def test_alert_sends_again_after_cooldown_expires(self):
+        notifier = dm.AlertNotifier()
+        notifier.cooldown_seconds = 0  # expires immediately
+        notifier.telegram = {'enabled': True, 'bot_token': 'x', 'chat_id': 'y'}
+
+        with patch.object(notifier, '_send_telegram', return_value=True) as mock_send:
+            notifier.send_alert('First', ['a'])
+            notifier.send_alert('Second', ['b'])
+            self.assertEqual(mock_send.call_count, 2)
 
 
 if __name__ == '__main__':
