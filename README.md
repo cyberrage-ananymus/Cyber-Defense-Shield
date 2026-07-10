@@ -98,22 +98,18 @@ Cyber-Defense-Shield is a practical, multi-layered defense tool for Linux system
 ## Installation
 
 ### Step 1: Clone Repository
-```
 git clone https://github.com/cyberrage-ananymus/Cyber-Defense-Shield.git
 cd Cyber-Defense-Shield
-```
+
 ### Step 2: Install Dependencies
-```
 sudo pip3 install -r requirements.txt
-```
+
 ### Step 3: Verify Installation
-```
 sudo python3 main.py --version
-```
+
 ### Step 4: Run the Tool
-```
 sudo python3 main.py
-```
+
 ## Usage
 
 ### Basic Execution
@@ -628,6 +624,10 @@ For support and questions:
 - **Atomic config writes:** `harden_ssh` and `harden_sudo` now write to a temp file and `os.replace()` into place, instead of appending/writing the real file directly - a process killed at the wrong instant can no longer leave `sshd_config` or a sudoers.d file half-written. Sudo hardening now validates with `visudo -c` *before* the file ever exists at its real path, not after
 - Added `ALERT_COOLDOWN_SECONDS` (default 300s): Telegram/Discord alerts are now rate-limited so a noisy period doesn't spam every daemon cycle - findings are still logged every cycle regardless, only the push notification is throttled
 - 4 more unit tests for the atomic-write pattern and alert cooldown - 20 tests total
+- **Fixed a real lockout risk:** `harden_ssh` now checks for at least one populated `authorized_keys` file (root and/or the invoking `SUDO_USER`) before restarting ssh, and prints an unmissable warning if none is found - `sshd -t` only validates config syntax, it says nothing about whether anyone could actually still log in once password auth is off
+- **Fixed a real data-leak risk:** `AlertNotifier` now redacts likely secrets (password/token/API-key patterns, mysql-style `-pVALUE` flags, Bearer tokens) from finding text before it's sent to Telegram/Discord - some findings originate from raw `ps aux`/log lines, which can legitimately contain a password someone put on a command line
+- Verified (not just claimed) that no subprocess call anywhere uses `shell=True` or string-built commands - every call site uses list-form arguments, which is what actually prevents shell/command injection regardless of what a config value contains
+- 6 more unit tests for alert redaction - 26 tests total
 
 ### v1.3.1 (2026)
 - Added Web Attack Scan (Option 15): actually wires up the SQL_INJECTION/XSS/PATH_TRAVERSAL signatures in config.py's ATTACK_PATTERNS to a real check against nginx/apache access logs - these patterns previously existed in config.py but were never read by any code
