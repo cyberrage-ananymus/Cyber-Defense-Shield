@@ -7,6 +7,7 @@ Main Application Controller
 """
 
 import os
+import shutil
 import sys
 import argparse
 import signal
@@ -79,6 +80,8 @@ class CyberDefenseShield:
 ╚═══════════════════════════════════════════════════════════════════════════╝
         """
         print(banner)
+        print("⚠️  Complementary hardening + monitoring toolkit - NOT a replacement for a WAF, EDR,")
+        print("    antivirus, or a dedicated IDS/IPS. See README.md 'Limitations' before relying on it.\n")
     
     def print_menu(self):
         """Display main menu"""
@@ -127,6 +130,41 @@ class CyberDefenseShield:
             print("[*] Run with: sudo python3 main.py\n")
             return False
         return True
+
+    def check_dependencies(self):
+        """Check that the system tools this project relies on are actually present.
+
+        Suggested independently: without this, a missing tool only shows
+        up as a scattered "Requires root access" or FileNotFoundError
+        message from whichever individual method happens to call it
+        first, deep into using the tool - not a clear picture up front of
+        what will and won't work on this particular system (e.g. a fresh
+        Ubuntu install without ufw/auditd set up yet). This just reports
+        what's missing; it never blocks startup, since most features are
+        independent of each other (missing `auditctl` shouldn't stop you
+        from using the firewall menu).
+        """
+        tools = {
+            'ufw': 'Firewall management (Option 4)',
+            'iptables': 'Rate limiting / DDoS protection (Option 3)',
+            'ss': 'Network/connection monitoring (multiple options)',
+            'ps': 'Process scanning (multiple options)',
+            'dpkg': 'Package checks (Option 1, 9)',
+            'auditctl': 'Syscall audit rules (Option 5)',
+            'ausearch': 'Syscall audit queries (Option 6)',
+            'sysctl': 'Kernel-level hardening (Option 3, 5)',
+            'systemctl': 'Service management (Option 1, 5)',
+            'visudo': 'Sudo hardening validation (Option 5)',
+            'sshd': 'SSH hardening validation (Option 5)',
+        }
+
+        missing = [name for name in tools if shutil.which(name) is None]
+        if missing:
+            print("[!] Some expected tools were not found on this system:")
+            for name in missing:
+                print(f"    - {name}: {tools[name]} will not work without it")
+            print("    (This is expected on non-Debian/Kali systems - see README Limitations.)\n")
+        return missing
     
     def run_option_1(self):
         """Full System Security Scan"""
@@ -352,6 +390,9 @@ class CyberDefenseShield:
         print("\n[*] Checking basic rootkit indicators...")
         rootkit_findings = self.malware_detector.check_rootkit_indicators()
         
+        print("\n[*] Checking for rkhunter (real rootkit scanner)...")
+        self.malware_detector.run_rkhunter_scan()
+        
         if suspicious_files:
             print("\n[!] SUSPICIOUS FILES FOUND:")
             for file in suspicious_files:
@@ -499,6 +540,9 @@ class CyberDefenseShield:
 
         logger.info(f"[*] Cyber-Defense-Shield daemon started (PID={os.getpid()}, interval={interval}s)")
         self.check_root()
+        missing = self.check_dependencies()
+        if missing:
+            logger.warning(f"[!] Missing tools: {', '.join(missing)} - related checks will report errors this session")
 
         while state['running']:
             cycle_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -566,6 +610,7 @@ class CyberDefenseShield:
         
         # Check root privileges
         is_root = self.check_root()
+        self.check_dependencies()
         
         while True:
             self.print_menu()
