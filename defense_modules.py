@@ -135,6 +135,32 @@ class AlertNotifier:
             print(f"[!] Discord alert failed: {e}")
             return False
 
+    _SECRET_PATTERNS = [
+        re.compile(r'(-p)(\S+)'),                              # mysql-style -pPASSWORD (not a space-separated -p PASSWORD)
+        re.compile(r'((?:pass(?:word)?|pwd|secret|token|api[_-]?key)\s*[:=]\s*)(\S+)', re.IGNORECASE),
+        re.compile(r'(Authorization:\s*Bearer\s+)(\S+)', re.IGNORECASE),
+    ]
+
+    @classmethod
+    def _redact(cls, text):
+        """Mask likely-sensitive values (passwords, tokens, API keys) before
+        a finding string leaves this machine.
+
+        Several findings originate from raw command lines (`ps aux`
+        output for suspicious processes) or log lines (web attack scan
+        matches) - both can legitimately contain a password or token
+        someone put on a command line (a common, if bad, practice: e.g.
+        `mysqldump -pMySecret`). Without this, that value would be sent
+        verbatim to a third-party service (Telegram/Discord) via
+        send_alert(). This is deliberately conservative (pattern-based,
+        may over- or under-match) - it reduces the chance of an obvious
+        leak, it does not guarantee no sensitive data ever appears in an
+        alert.
+        """
+        for pattern in cls._SECRET_PATTERNS:
+            text = pattern.sub(lambda m: m.group(1) + '***REDACTED***', text)
+        return text
+
     def send_alert(self, title, findings):
         """Send an alert with the given findings, if any transport is configured.
 
@@ -162,7 +188,7 @@ class AlertNotifier:
 
         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
         lines = [f"Cyber-Defense-Shield Alert - {title}", timestamp, ""]
-        lines.extend(f"- {item}" for item in findings[:15])
+        lines.extend(f"- {self._redact(str(item))}" for item in findings[:15])
         message = "\n".join(lines)
 
         sent_telegram = self._send_telegram(message)
@@ -922,6 +948,32 @@ Protocol 2
                 print(f"[!] SSH Hardening: New config failed validation, restored backup.")
                 print(f"[!] sshd -t said: {test.stderr.strip()}")
                 return
+
+            # `sshd -t` only validates syntax - it says nothing about
+            # whether anyone can actually still log in once
+            # PasswordAuthentication is turned off. Check for at least
+            # one populated authorized_keys before restarting, since a
+            # syntactically-valid config that nobody has a key for is
+            # exactly how people lock themselves out of a remote server.
+            candidate_users = {'root'}
+            sudo_user = os.environ.get('SUDO_USER')
+            if sudo_user:
+                candidate_users.add(sudo_user)
+            home_of = lambda u: '/root' if u == 'root' else f'/home/{u}'
+            has_authorized_key = any(
+                os.path.exists(p) and os.path.getsize(p) > 0
+                for p in (f'{home_of(u)}/.ssh/authorized_keys' for u in candidate_users)
+            )
+            if not has_authorized_key:
+                print("[!] " + "=" * 68)
+                print("[!] WARNING: No populated authorized_keys file found for root")
+                print(f"[!] or {sudo_user or '(unknown sudo user)'}. This config disables password")
+                print("[!] login. If no other access method (console, another user's")
+                print("[!] key, cloud provider recovery) exists, restarting ssh now")
+                print("[!] could lock you out permanently.")
+                print("[!] " + "=" * 68)
+                print("[*] Proceeding anyway - this tool does not block on warnings.")
+                print("[*] Ctrl+C now if you need to add a key first.")
 
             _exec(['systemctl', 'restart', 'ssh'], capture_output=True)
             print("[+] SSH Hardening: COMPLETE")
@@ -2210,34 +2262,4 @@ class AdvancedReporter:
             </ul>
         </div>
         
-        <div class="section">
-            <h2>Threat Detection Capabilities</h2>
-            <ul>
-                <li><strong>DDoS/DoS:</strong> SYN Flood, UDP Flood, Rate Limiting</li>
-                <li><strong>Network Attacks:</strong> Port Scanning, Suspicious IPs, Man-in-the-Middle</li>
-                <li><strong>Intrusion:</strong> Brute Force, Port Scans, Anomalous Behavior</li>
-                <li><strong>Malware:</strong> Suspicious Files, File Integrity, Behavioral Analysis</li>
-                <li><strong>Unauthorized Access:</strong> Failed Logins, Privilege Escalation, Suspicious Users</li>
-                <li><strong>Vulnerabilities:</strong> CVE Detection, Outdated Packages, Weak Permissions</li>
-            </ul>
-        </div>
-        
-        <div class="footer">
-            <p><strong>Cyber-Defense-Shield v1.4</strong></p>
-            <p>Multi-Layered Security Tool for Linux Systems</p>
-            <p>Cyber-Rage Security Team © 2026</p>
-            <p>Report generated by signature-based detection and system checks - see the project README for full scope and limitations</p>
-        </div>
-    </div>
-</body>
-</html>
-        """
-        
-        try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            print(f"[+] Report Generated: {filename}")
-            return filename
-        except Exception as e:
-            print(f"[!] Error generating report: {e}")
-            return None
+        <div clas
