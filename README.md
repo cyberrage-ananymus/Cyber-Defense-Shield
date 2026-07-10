@@ -98,23 +98,18 @@ Cyber-Defense-Shield is a practical, multi-layered defense tool for Linux system
 ## Installation
 
 ### Step 1: Clone Repository
-```
 git clone https://github.com/cyberrage-ananymus/Cyber-Defense-Shield.git
 cd Cyber-Defense-Shield
-```
+
 ### Step 2: Install Dependencies
-```
 sudo pip3 install -r requirements.txt
-```
+
 ### Step 3: Verify Installation
-```
 sudo python3 main.py --version
-```
 
 ### Step 4: Run the Tool
-```
 sudo python3 main.py
-```
+
 ## Usage
 
 ### Basic Execution
@@ -326,6 +321,9 @@ EMAIL_CONFIG = {
 
 # Daemon mode interval (seconds)
 DAEMON_SCAN_INTERVAL_SECONDS = 300
+
+# Minimum time between Telegram/Discord pushes (findings still logged every cycle)
+ALERT_COOLDOWN_SECONDS = 300
 
 ### Tuning Detection Thresholds
 
@@ -622,6 +620,10 @@ For support and questions:
 - Web Attack Scan rotation detection now also checks the log file's inode, not just its size - catches a rotation the size check alone could miss if the new file happens to already be larger than the old offset before the next check
 - Added real `rkhunter` integration (Option 11): runs an actual scan if installed, gives install instructions if not, instead of relying solely on this project's own basic rootkit heuristics - both independent reviews converged on this as the highest-value next step
 - Added `MalwareDetector.BASELINE_FILE` permissions/location note and 4 more unit tests (inode rotation, dependency-check-adjacent logic) - 16 tests total
+- **Fixed a real gap between claim and code:** the file integrity baseline's docstring said it was chmod'd 0600 - it wasn't actually chmod'd anywhere. Now it is (0600 file, 0700 directory, created if missing)
+- **Atomic config writes:** `harden_ssh` and `harden_sudo` now write to a temp file and `os.replace()` into place, instead of appending/writing the real file directly - a process killed at the wrong instant can no longer leave `sshd_config` or a sudoers.d file half-written. Sudo hardening now validates with `visudo -c` *before* the file ever exists at its real path, not after
+- Added `ALERT_COOLDOWN_SECONDS` (default 300s): Telegram/Discord alerts are now rate-limited so a noisy period doesn't spam every daemon cycle - findings are still logged every cycle regardless, only the push notification is throttled
+- 4 more unit tests for the atomic-write pattern and alert cooldown - 20 tests total
 
 ### v1.3.1 (2026)
 - Added Web Attack Scan (Option 15): actually wires up the SQL_INJECTION/XSS/PATH_TRAVERSAL signatures in config.py's ATTACK_PATTERNS to a real check against nginx/apache access logs - these patterns previously existed in config.py but were never read by any code
