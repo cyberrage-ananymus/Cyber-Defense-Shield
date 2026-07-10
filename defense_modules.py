@@ -12,6 +12,7 @@ import json
 from datetime import datetime
 import hashlib
 import os
+import shutil
 
 try:
     import config as _config
@@ -212,10 +213,15 @@ class WebAttackScanner:
         First run (no stored offset yet) starts from the current end of
         the file rather than scanning existing history, so turning this
         on doesn't trigger one large one-time scan of a potentially huge
-        pre-existing log. If the log was rotated/truncated since the
-        last check (stored offset is now beyond the file's current size),
-        this detects that and restarts from the beginning of the new file
-        instead of erroring out or missing everything.
+        pre-existing log. Rotation is detected two ways, not just one:
+        the stored offset being beyond the current file's size (catches
+        `copytruncate`-style rotation), and the file's inode number
+        changing (catches `create`-style rotation, where logrotate
+        renames the old file and creates a new one at the same path -
+        a size check alone could theoretically miss this if the new file
+        happened to already grow past the old offset before the next
+        check; the inode never lies about whether it's really the same
+        file).
         """
         print("[*] Scanning web server logs for attack signatures...")
 
@@ -231,16 +237,21 @@ class WebAttackScanner:
 
         try:
             file_size = os.path.getsize(log_path)
+            current_inode = os.stat(log_path).st_ino
             offsets = self._load_offsets()
-            last_offset = offsets.get(log_path)
+            state = offsets.get(log_path)
+            last_offset = state.get('offset') if isinstance(state, dict) else state
+            last_inode = state.get('inode') if isinstance(state, dict) else None
 
             if last_offset is None:
                 # First time seeing this log: skip existing history, start
                 # watching from here on rather than one big historical scan.
                 last_offset = file_size
+            elif last_inode is not None and last_inode != current_inode:
+                print(f"[*] Web Attack Scan: {log_path} was replaced (inode changed) - treating as rotated, restarting from the beginning")
+                last_offset = 0
             elif last_offset > file_size:
-                # Log was rotated/truncated since last check.
-                print(f"[*] Web Attack Scan: {log_path} appears to have been rotated, restarting from the beginning")
+                print(f"[*] Web Attack Scan: {log_path} appears to have been rotated (shrunk), restarting from the beginning")
                 last_offset = 0
 
             with open(log_path, 'r', errors='ignore') as f:
@@ -248,7 +259,7 @@ class WebAttackScanner:
                 new_lines = f.readlines()
                 new_offset = f.tell()
 
-            offsets[log_path] = new_offset
+            offsets[log_path] = {'offset': new_offset, 'inode': current_inode}
             self._save_offsets(offsets)
         except Exception as e:
             print(f"[!] Web Attack Scan: {e}")
@@ -1831,6 +1842,49 @@ class MalwareDetector:
             print("[+] No known suspicious rootkit paths found")
 
         return findings
+
+    def run_rkhunter_scan(self):
+        """Run a real rootkit scan via rkhunter, if it's installed.
+
+        check_rootkit_indicators() above is an intentionally basic
+        heuristic (process-count mismatch + a handful of known paths) -
+        independent reviews of this project converged on the same point:
+        defer to a real, purpose-built rootkit scanner instead of this
+        tool trying to reinvent one. This method does that - it looks
+        for rkhunter and runs an actual scan if present, or gives clear
+        install instructions if not, rather than silently skipping it.
+
+        Not run by daemon mode: a full rkhunter scan can take a minute
+        or more and walks a large part of the filesystem, which doesn't
+        belong in a lightweight periodic background loop. Available from
+        the interactive menu (Option 11) only.
+        """
+        rkhunter_path = shutil.which('rkhunter')
+        if not rkhunter_path:
+            print("[!] rkhunter is not installed - this tool's own rootkit checks")
+            print("    are basic heuristics, not a substitute for a real scanner.")
+            print("    Install it for a proper rootkit scan: sudo apt install rkhunter")
+            return None
+
+        print("[*] Running rkhunter scan (this can take a minute or more)...")
+        try:
+            result = subprocess.run(
+                [rkhunter_path, '--check', '--skip-keypress', '--report-warnings-only', '--nocolors'],
+                capture_output=True, text=True, timeout=180
+            )
+            output = result.stdout.strip()
+            if output:
+                print("[!] rkhunter warnings:")
+                print(output)
+            else:
+                print("[+] rkhunter: no warnings")
+            return output
+        except subprocess.TimeoutExpired:
+            print("[!] rkhunter scan timed out after 180s")
+            return None
+        except Exception as e:
+            print(f"[!] rkhunter scan failed: {e}")
+            return None
 
 
 class UserActivityAuditor:
