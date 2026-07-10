@@ -102,6 +102,27 @@ class TestWebAttackScanner(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertIn('PATH_TRAVERSAL', findings[0])
 
+    def test_rotation_detected_via_inode_even_if_new_file_is_larger(self):
+        """Size-only rotation checks can miss a rotation if the new file
+        happens to already be bigger than the old offset. The inode
+        never lies about whether it's really the same file - this is
+        the scenario a size check alone cannot catch."""
+        self._write_log(['x' * 500])
+        self.scanner.scan_web_logs()
+
+        os.rename(self.log_path, self.log_path + '.1')
+        try:
+            with open(self.log_path, 'w') as f:
+                f.write('9.9.9.9 - - "GET /f?p=../../etc/passwd HTTP/1.1" 200\n')
+                f.write('y' * 600 + '\n')  # deliberately bigger than the old offset
+
+            findings = self.scanner.scan_web_logs()
+            self.assertEqual(len(findings), 1)
+            self.assertIn('PATH_TRAVERSAL', findings[0])
+        finally:
+            if os.path.exists(self.log_path + '.1'):
+                os.remove(self.log_path + '.1')
+
 
 class TestArpSpoofingDetection(unittest.TestCase):
     """ARP table analysis for basic MITM indicators."""
