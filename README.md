@@ -6,6 +6,8 @@ Multi-Layered Security Tool for Linux Systems
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 
+> ⚠️ **This is a complementary hardening + monitoring toolkit, not a replacement for a WAF, EDR, antivirus, or a dedicated IDS/IPS (Suricata, OSSEC, etc.).** Its detection is lightweight and heuristic-based - see [Limitations](#limitations) for exactly what it does and does not do before relying on it for anything critical.
+
 ## Overview
 
 Cyber-Defense-Shield is a practical, multi-layered defense tool for Linux systems. It combines firewall management, system hardening, and lightweight detection - DDoS/DoS mitigation, intrusion detection, basic malware/rootkit indicators, and web attack log scanning - into a single command-line tool with an optional background daemon. See [Limitations](#limitations) below for what it deliberately does not try to be.
@@ -96,22 +98,18 @@ Cyber-Defense-Shield is a practical, multi-layered defense tool for Linux system
 ## Installation
 
 ### Step 1: Clone Repository
-```
 git clone https://github.com/cyberrage-ananymus/Cyber-Defense-Shield.git
 cd Cyber-Defense-Shield
-```
+
 ### Step 2: Install Dependencies
-```
 sudo pip3 install -r requirements.txt
-```
+
 ### Step 3: Verify Installation
-```
 sudo python3 main.py --version
-```
+
 ### Step 4: Run the Tool
-```
 sudo python3 main.py
-```
+
 ## Usage
 
 ### Basic Execution
@@ -382,6 +380,7 @@ Functions:
 - print_banner(): Display application banner
 - print_menu(): Display menu options
 - check_root(): Verify root privileges
+- check_dependencies(): Report which required system tools (ufw, iptables, auditctl, etc.) are missing, without blocking startup
 - run(): Main interactive program loop
 - run_daemon(): Continuous background loop (detection + alerts only), used by --daemon
 - parse_args(): Parses --daemon / --interval CLI flags
@@ -400,7 +399,7 @@ Classes:
 - ReportGenerator: Report generation, pulls in all v1.4 checks (rootkit/kernel/ARP/services)
 - VulnerabilityScanner: Known vulnerability / outdated package checks
 - IntrusionDetectionSystem: Per-source IDS (port scan, SYN flood, brute force, ARP spoofing/MITM)
-- MalwareDetector: Suspicious file/process detection, kernel module analysis, basic rootkit indicators
+- MalwareDetector: Suspicious file/process detection, kernel module analysis, basic rootkit indicators, real rkhunter integration if installed
 - UserActivityAuditor: Login and privilege escalation auditing
 - AdvancedReporter: Comprehensive HTML reporting
 - AlertNotifier: Sends findings to Telegram/Discord (used by --daemon)
@@ -585,6 +584,8 @@ Found a bug? Please report it:
 For support and questions:
 - Open GitHub Issues
 - Contact via Session Messenger: 05fd51ac639edc257133f9364529eff3af1d69c5c18b31f321ba466b3823a0a805
+- Join the Discord community: https://discord.gg/9KhfPTqTg
+- Connect on LinkedIn: https://www.linkedin.com/in/cyber-rage-green-eyes-801656416
 
 ## Changelog
 
@@ -612,6 +613,10 @@ For support and questions:
 - Added `config.py` validation at startup - catches wrong types/values (e.g. a threshold set to a string, a negative rate limit) with a clear message instead of a confusing traceback deep inside some method
 - Added a basic test suite (`tests/test_defense_modules.py`, stdlib `unittest` only) covering web-attack-scan tailing/rotation, ARP spoofing detection, kernel module comparison, config validation, and `--dry-run`'s command interception
 - Documented an optional, reduced-privilege systemd configuration for `--daemon` (capabilities instead of full root) in `cyber-defense-shield.service` - commented out by default since it needs verification on your specific distro, but available for anyone who wants it
+- Added a prominent "not a replacement for a WAF/EDR/antivirus" warning at the top of the README and printed by the app itself on startup
+- Web Attack Scan rotation detection now also checks the log file's inode, not just its size - catches a rotation the size check alone could miss if the new file happens to already be larger than the old offset before the next check
+- Added real `rkhunter` integration (Option 11): runs an actual scan if installed, gives install instructions if not, instead of relying solely on this project's own basic rootkit heuristics - both independent reviews converged on this as the highest-value next step
+- Added `MalwareDetector.BASELINE_FILE` permissions/location note and 4 more unit tests (inode rotation, dependency-check-adjacent logic) - 16 tests total
 
 ### v1.3.1 (2026)
 - Added Web Attack Scan (Option 15): actually wires up the SQL_INJECTION/XSS/PATH_TRAVERSAL signatures in config.py's ATTACK_PATTERNS to a real check against nginx/apache access logs - these patterns previously existed in config.py but were never read by any code
