@@ -354,6 +354,7 @@ COMPLIANCE = {
 # automatically each cycle, since silently re-applying system changes on
 # a timer is a different (and much riskier) feature than monitoring.
 DAEMON_SCAN_INTERVAL_SECONDS = 300  # seconds between automated check cycles
+ALERT_COOLDOWN_SECONDS = 300  # minimum time between Telegram/Discord pushes (findings are still logged every cycle regardless)
 
 # ============================================
 # TELEGRAM ALERTS (Optional)
@@ -421,6 +422,7 @@ def validate_config():
     _expect_type('BRUTE_FORCE_ATTEMPTS_THRESHOLD', BRUTE_FORCE_ATTEMPTS_THRESHOLD, int, lambda v: v > 0)
     _expect_type('BRUTE_FORCE_WINDOW_MINUTES', BRUTE_FORCE_WINDOW_MINUTES, int, lambda v: v > 0)
     _expect_type('DAEMON_SCAN_INTERVAL_SECONDS', DAEMON_SCAN_INTERVAL_SECONDS, int, lambda v: v >= 10)
+    _expect_type('ALERT_COOLDOWN_SECONDS', ALERT_COOLDOWN_SECONDS, int, lambda v: v >= 0)
     _expect_type('ATTACK_PATTERNS', ATTACK_PATTERNS, dict,
                  lambda v: all(isinstance(sigs, list) for sigs in v.values()))
     _expect_type('TELEGRAM_CONFIG', TELEGRAM_CONFIG, dict, lambda v: 'enabled' in v)
