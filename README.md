@@ -628,6 +628,11 @@ For support and questions:
 - **Fixed a real data-leak risk:** `AlertNotifier` now redacts likely secrets (password/token/API-key patterns, mysql-style `-pVALUE` flags, Bearer tokens) from finding text before it's sent to Telegram/Discord - some findings originate from raw `ps aux`/log lines, which can legitimately contain a password someone put on a command line
 - Verified (not just claimed) that no subprocess call anywhere uses `shell=True` or string-built commands - every call site uses list-form arguments, which is what actually prevents shell/command injection regardless of what a config value contains
 - 6 more unit tests for alert redaction - 26 tests total
+- Added `TRAFFIC_ANOMALY_THRESHOLD_MBPS` to config.py (was used via `_cfg()` with a hardcoded fallback, but silently missing from config.py itself, so it wasn't actually tunable the way the docs described) and closed 3 similar validation gaps for recently-added settings
+- **Fixed a real reporting gap:** Option 10's suspicious-connection findings were checked and printed individually, but silently never made it into the final "THREATS DETECTED" summary - only ARP findings were. Now both are
+- **Fixed the same class of gap in Option 11:** suspicious-process findings from `scan_executable_behavior()` were detected and printed individually but never summarized, unlike suspicious files and rootkit indicators
+- **Fixed `check_cve_updates`:** it ran `apt list --upgradable`, captured the result, and then never looked at it - always printing "Complete" and returning `True` regardless of what apt actually reported or whether the command even succeeded. Now it reports the actual upgradable count and correctly returns `False` on a failed apt call
+- 2 more unit tests for CVE-check reporting - 28 tests total
 
 ### v1.3.1 (2026)
 - Added Web Attack Scan (Option 15): actually wires up the SQL_INJECTION/XSS/PATH_TRAVERSAL signatures in config.py's ATTACK_PATTERNS to a real check against nginx/apache access logs - these patterns previously existed in config.py but were never read by any code
