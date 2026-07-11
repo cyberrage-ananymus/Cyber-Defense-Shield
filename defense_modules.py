@@ -1481,11 +1481,28 @@ class VulnerabilityScanner:
         return vulnerabilities
     
     def check_cve_updates(self):
-        """Check for CVE security updates"""
+        """Check for CVE security updates.
+
+        Previously ran `apt list --upgradable`, captured the result, and
+        then never actually looked at it - it printed a fixed "Complete"
+        message and returned True unconditionally, regardless of whether
+        the command even succeeded or how many updates (potentially
+        carrying CVE fixes) were pending. Now it actually reports what it
+        found.
+        """
         print("[*] Checking for CVE security updates...")
         try:
-            result = subprocess.run(['apt', 'list', '--upgradable'], capture_output=True, text=True)
-            print(f"[+] CVE Check Complete")
+            result = subprocess.run(['apt', 'list', '--upgradable'], capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                print(f"[!] CVE Check: apt list failed (exit {result.returncode})")
+                return False
+
+            # First line is a "Listing..." header, not a package.
+            upgradable = [l for l in result.stdout.strip().split('\n')[1:] if l.strip()]
+            if upgradable:
+                print(f"[!] CVE Check: {len(upgradable)} package(s) have updates available (may include security fixes)")
+            else:
+                print("[+] CVE Check: No pending package updates")
             return True
         except Exception as e:
             print(f"[!] CVE Check Error: {e}")
