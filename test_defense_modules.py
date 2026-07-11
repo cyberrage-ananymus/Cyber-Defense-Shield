@@ -369,6 +369,28 @@ class TestDryRun(unittest.TestCase):
             mock_run.assert_called_once()
 
 
+class TestCveUpdateReporting(unittest.TestCase):
+    """check_cve_updates must actually report what apt found, not just
+    print a fixed 'Complete' message regardless of the result."""
+
+    def test_reports_upgradable_count(self):
+        vs = dm.VulnerabilityScanner()
+        fake_output = "Listing...\npkg1/stable 1.0 amd64\npkg2/stable 2.0 amd64\n"
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=fake_output)
+            with patch('builtins.print') as mock_print:
+                vs.check_cve_updates()
+                printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn('2', printed)  # should mention the 2 upgradable packages
+
+    def test_reports_apt_failure_instead_of_claiming_success(self):
+        vs = dm.VulnerabilityScanner()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout='')
+            result = vs.check_cve_updates()
+        self.assertFalse(result, "a failed apt call must not be reported as a successful check")
+
+
 class TestAlertCooldown(unittest.TestCase):
     """AlertNotifier must not spam Telegram/Discord every cycle."""
 
