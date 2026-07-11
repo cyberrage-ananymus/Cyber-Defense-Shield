@@ -355,6 +355,8 @@ class CyberDefenseShield:
         
         print("\n[*] Monitoring suspicious connections...")
         suspicious = self.ids.monitor_suspicious_connections()
+        if suspicious:
+            threats.append(f"{len(suspicious)} suspicious connection(s) matched (0.0.0.0/broadcast pattern)")
         
         print("\n[*] Checking for ARP spoofing (MITM indicators)...")
         arp_findings = self.ids.detect_arp_spoofing()
@@ -404,6 +406,11 @@ class CyberDefenseShield:
             print("\n[!] ROOTKIT/KERNEL INDICATORS FOUND:")
             for item in flagged_modules + rootkit_findings:
                 print(f"    - {item}")
+        
+        if suspicious_processes:
+            print("\n[!] SUSPICIOUS PROCESSES FOUND:")
+            for proc in suspicious_processes:
+                print(f"    - {proc[:80]}")
         
         print("\n[+] Malware Detection COMPLETE!\n")
     
