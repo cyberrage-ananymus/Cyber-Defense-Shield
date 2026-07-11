@@ -180,6 +180,7 @@ NETWORK_SECURITY = {
 ICMP_RATE_LIMIT_PER_SECOND = 10
 UDP_RATE_LIMIT_PER_SECOND = 50
 UDP_RATE_LIMIT_BURST = 100
+TRAFFIC_ANOMALY_THRESHOLD_MBPS = 50  # combined sent+recv rate that triggers a traffic-spike finding
 
 # ============================================
 # SYSTEM HARDENING SETTINGS
@@ -423,6 +424,10 @@ def validate_config():
     _expect_type('BRUTE_FORCE_WINDOW_MINUTES', BRUTE_FORCE_WINDOW_MINUTES, int, lambda v: v > 0)
     _expect_type('DAEMON_SCAN_INTERVAL_SECONDS', DAEMON_SCAN_INTERVAL_SECONDS, int, lambda v: v >= 10)
     _expect_type('ALERT_COOLDOWN_SECONDS', ALERT_COOLDOWN_SECONDS, int, lambda v: v >= 0)
+    _expect_type('ICMP_RATE_LIMIT_PER_SECOND', ICMP_RATE_LIMIT_PER_SECOND, int, lambda v: v > 0)
+    _expect_type('UDP_RATE_LIMIT_PER_SECOND', UDP_RATE_LIMIT_PER_SECOND, int, lambda v: v > 0)
+    _expect_type('UDP_RATE_LIMIT_BURST', UDP_RATE_LIMIT_BURST, int, lambda v: v > 0)
+    _expect_type('TRAFFIC_ANOMALY_THRESHOLD_MBPS', TRAFFIC_ANOMALY_THRESHOLD_MBPS, (int, float), lambda v: v > 0)
     _expect_type('ATTACK_PATTERNS', ATTACK_PATTERNS, dict,
                  lambda v: all(isinstance(sigs, list) for sigs in v.values()))
     _expect_type('TELEGRAM_CONFIG', TELEGRAM_CONFIG, dict, lambda v: 'enabled' in v)
