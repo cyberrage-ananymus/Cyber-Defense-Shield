@@ -639,6 +639,8 @@ For support and questions:
 - Systematically re-verified detection logic that was previously only "doesn't crash" tested, this time with realistic mocked tool output asserted against known-correct results: suspicious-IP threshold detection, per-source SYN-flood/port-scan classification, the `EXPECTED_SERVICES` allowlist (both populated and empty), and 777-permission file detection against real files on disk
 - Fixed 2 reporting gaps: suspicious-connection findings (Option 10) and suspicious-process findings (Option 11) were detected and printed individually but never made it into the final summary block, unlike other finding types in the same options
 - 12 more unit tests covering all of the above - 38 tests total
+- **Closed the gap `sshd -t` can't cover:** `harden_ssh` restarted the ssh service and unconditionally reported success without checking whether the restart command succeeded or whether the service was actually active afterward. A syntactically valid config can still fail at runtime. Now checks both, and automatically rolls back to the pre-hardening backup (same mechanism as the invalid-syntax case) if the service isn't verified active after restarting
+- 4 more unit tests for the post-restart verification logic - 42 tests total
 
 ### v1.3.1 (2026)
 - Added Web Attack Scan (Option 15): actually wires up the SQL_INJECTION/XSS/PATH_TRAVERSAL signatures in config.py's ATTACK_PATTERNS to a real check against nginx/apache access logs - these patterns previously existed in config.py but were never read by any code
