@@ -14,6 +14,7 @@ import hashlib
 import os
 import shutil
 import tempfile
+import time
 
 try:
     import config as _config
@@ -1010,8 +1011,36 @@ Protocol 2
                 print("[*] Proceeding anyway - this tool does not block on warnings.")
                 print("[*] Ctrl+C now if you need to add a key first.")
 
-            _exec(['systemctl', 'restart', 'ssh'], capture_output=True)
-            print("[+] SSH Hardening: COMPLETE")
+            restart_result = _exec(['systemctl', 'restart', 'ssh'], capture_output=True, text=True)
+
+            # sshd -t only validates syntax - it says nothing about
+            # whether the service actually comes back up. A config can
+            # be syntactically valid and still fail to apply at runtime
+            # (a referenced key file with wrong permissions, a port
+            # already in use, etc.). Verify the service is genuinely
+            # active after restarting, not just that the restart command
+            # returned - a command can report success while the service
+            # immediately crash-loops. If it isn't, roll back the same
+            # way an invalid syntax check already does, rather than
+            # leaving SSH down with no automatic recovery.
+            time.sleep(1)
+            status_check = subprocess.run(['systemctl', 'is-active', 'ssh'], capture_output=True, text=True)
+            service_ok = restart_result.returncode == 0 and status_check.stdout.strip() == 'active'
+
+            if not service_ok:
+                print("[!] SSH Hardening: service is not active after restart - rolling back")
+                with open(backup_path, 'r') as bf:
+                    original = bf.read()
+                fd3, tmp_path3 = tempfile.mkstemp(dir=os.path.dirname(config_path), suffix='.cds_rollback')
+                with os.fdopen(fd3, 'w') as f:
+                    f.write(original)
+                os.replace(tmp_path3, config_path)
+                _exec(['systemctl', 'restart', 'ssh'], capture_output=True)
+                print("[!] SSH Hardening: rolled back to the previous config and restarted ssh")
+                print(f"[!] systemctl is-active said: {status_check.stdout.strip() or status_check.stderr.strip()}")
+                return
+
+            print("[+] SSH Hardening: COMPLETE (service verified active after restart)")
         except FileNotFoundError:
             print(f"[!] SSH Hardening: {config_path} not found")
         except Exception as e:
