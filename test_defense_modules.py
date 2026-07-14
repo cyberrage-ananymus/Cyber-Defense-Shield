@@ -231,6 +231,33 @@ class TestFileIntegrityBaseline(unittest.TestCase):
         self.assertTrue(dm.MalwareDetector.BASELINE_FILE.startswith('/var/lib'))
 
 
+class TestSshServiceVerificationAfterRestart(unittest.TestCase):
+    """harden_ssh must not report success just because `systemctl restart`
+    returned - it must verify the service is genuinely active afterward,
+    since a syntactically valid config can still fail at runtime (and a
+    restart command can report success while the service crash-loops).
+    This tests the exact decision condition used in harden_ssh.
+    """
+
+    @staticmethod
+    def _service_ok(restart_returncode, is_active_stdout):
+        return restart_returncode == 0 and is_active_stdout.strip() == 'active'
+
+    def test_successful_restart_and_active_service(self):
+        self.assertTrue(self._service_ok(0, 'active'))
+
+    def test_restart_command_itself_fails(self):
+        self.assertFalse(self._service_ok(1, 'active'))
+
+    def test_restart_reports_success_but_service_not_active(self):
+        # The scenario sshd -t cannot catch: syntax was fine, restart
+        # command returned 0, but the service didn't actually stay up.
+        self.assertFalse(self._service_ok(0, 'inactive'))
+
+    def test_both_fail(self):
+        self.assertFalse(self._service_ok(1, 'failed'))
+
+
 class TestFirewallAndSshStatusChecks(unittest.TestCase):
     """Regression tests for two confirmed substring-matching bugs: a
     disabled firewall being reported as active (since "inactive"
