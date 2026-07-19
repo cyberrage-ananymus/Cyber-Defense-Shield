@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Defense Modules - Core Security Functions
-Updated Version 1.4 - Daemon Mode & Alerting
+Updated Version 1.5 - Bug-fix pass: false-success reporting, ignored
+config values, ss column-index bug, dead code
 """
 
 import subprocess
@@ -69,19 +70,6 @@ def _exec(cmd, **kwargs):
         print(f"[DRY-RUN] Would run: {' '.join(cmd)}")
         return subprocess.CompletedProcess(cmd, 0, stdout=b'', stderr=b'')
     return subprocess.run(cmd, **kwargs)
-
-
-def _write_file(path, content, mode='w'):
-    """Write to a file that represents a state change (config files,
-    sudoers.d drops, etc.), or preview it under --dry-run instead of
-    actually writing.
-    """
-    if DRY_RUN:
-        preview = content if len(content) < 200 else content[:200] + '...'
-        print(f"[DRY-RUN] Would write to {path}:\n{preview}")
-        return
-    with open(path, mode) as f:
-        f.write(content)
 
 
 class AlertNotifier:
@@ -336,16 +324,24 @@ class SecurityScanner:
     """Main Security Scanner"""
     
     def scan_open_ports(self):
-        """Scan for open ports"""
+        """Scan for open (listening) TCP/UDP ports via `ss -tunlp`.
+
+        `-tunlp` combines tcp+udp in one table, so ss prepends a Netid
+        column and every field shifts right by one compared to a
+        single-protocol query: Netid/State/Recv-Q/Send-Q/Local-Address:
+        Port/Peer-Address:Port/Process. Local Address:Port is therefore
+        parts[4], not parts[3] (which is Send-Q - a queue depth, not an
+        address). Confirmed against real -tulpn output (-tunlp/-tulpn
+        are the same flags in a different order).
+        """
         try:
             result = subprocess.run(['ss', '-tunlp'], capture_output=True, text=True)
             ports = []
             for line in result.stdout.split('\n')[1:]:
                 if line.strip():
                     parts = line.split()
-                    if len(parts) >= 4:
-                        port_info = parts[3]
-                        ports.append(port_info)
+                    if len(parts) >= 5 and ':' in parts[4]:
+                        ports.append(parts[4])
             print(f"[+] Open Ports Scanned: {len(ports)}")
             return ports
         except Exception as e:
@@ -833,8 +829,12 @@ class FirewallManager:
     def enable_firewall(self):
         """Enable firewall"""
         try:
-            _exec(['ufw', 'enable'], input=b'y\n', capture_output=True)
-            print("[+] UFW Firewall: ENABLED")
+            result = _exec(['ufw', 'enable'], input=b'y\n', capture_output=True)
+            if result.returncode == 0:
+                print("[+] UFW Firewall: ENABLED")
+            else:
+                err = result.stderr.decode(errors='replace').strip() if isinstance(result.stderr, bytes) else str(result.stderr or '').strip()
+                print(f"[!] UFW Firewall: enable command failed ({err or f'exit code {result.returncode}'})")
         except Exception as e:
             print(f"[!] Firewall: {e}")
     
@@ -848,24 +848,41 @@ class FirewallManager:
             ['ufw', 'allow', '443/tcp'],
         ]
         
+        applied = 0
         for rule in rules:
             try:
-                _exec(rule, capture_output=True)
-            except:
+                result = _exec(rule, capture_output=True)
+                if result.returncode == 0:
+                    applied += 1
+            except Exception:
                 pass
         
-        print("[+] Security Rules: ADDED")
+        if applied == len(rules):
+            print(f"[+] Security Rules: ADDED ({applied}/{len(rules)})")
+        else:
+            print(f"[!] Security Rules: {applied}/{len(rules)} applied - check ufw/permissions for the rest")
     
     def close_dangerous_ports(self):
-        """Close dangerous ports"""
-        dangerous_ports = ['23', '21', '69', '135', '139', '445', '3389']
+        """Close dangerous ports.
+
+        Reads the port list from config.DANGEROUS_PORTS instead of a
+        short hardcoded subset, so this actually covers the same ports
+        the rest of the tool considers dangerous.
+        """
+        dangerous_ports = [str(p) for p in _cfg('DANGEROUS_PORTS', [21, 23, 69, 135, 139, 445, 3389])]
+        closed = 0
         for port in dangerous_ports:
             try:
-                _exec(['ufw', 'deny', port], capture_output=True)
-            except:
+                result = _exec(['ufw', 'deny', port], capture_output=True)
+                if result.returncode == 0:
+                    closed += 1
+            except Exception:
                 pass
         
-        print(f"[+] Dangerous Ports Closed: {len(dangerous_ports)}")
+        if closed == len(dangerous_ports):
+            print(f"[+] Dangerous Ports Closed: {closed}/{len(dangerous_ports)}")
+        else:
+            print(f"[!] Dangerous Ports Closed: {closed}/{len(dangerous_ports)} - check ufw/permissions for the rest")
     
     def enable_incoming_monitoring(self):
         """Enable incoming traffic monitoring.
@@ -1047,25 +1064,50 @@ Protocol 2
             print(f"[!] SSH Hardening: Requires root access ({e})")
     
     def update_system(self):
-        """Update system packages"""
+        """Update system packages.
+
+        Same "claimed success without checking" bug that check_cve_updates
+        and enable_audit_logging were fixed for elsewhere - apt-get's
+        return code was captured and never looked at, so this printed
+        COMPLETE even when the update or upgrade actually failed.
+        """
         try:
-            _exec(['apt-get', 'update'], capture_output=True, timeout=30)
-            _exec(['apt-get', 'upgrade', '-y'], capture_output=True, timeout=60)
-            print("[+] System Update: COMPLETE")
+            update = _exec(['apt-get', 'update'], capture_output=True, text=True, timeout=30)
+            if update.returncode != 0:
+                print(f"[!] System Update: apt-get update failed ({update.stderr.strip()[:200]})")
+                return
+
+            upgrade = _exec(['apt-get', 'upgrade', '-y'], capture_output=True, text=True, timeout=60)
+            if upgrade.returncode == 0:
+                print("[+] System Update: COMPLETE")
+            else:
+                print(f"[!] System Update: apt-get upgrade failed ({upgrade.stderr.strip()[:200]})")
+        except subprocess.TimeoutExpired:
+            print("[!] System Update: timed out")
         except Exception as e:
             print(f"[!] System Update: {e}")
     
     def disable_unnecessary_services(self):
-        """Disable unnecessary services"""
-        services = ['cups', 'avahi-daemon', 'isc-dhcp-server', 'snmpd', 'rsync']
+        """Disable unnecessary services.
+
+        Reads the service list from config.UNNECESSARY_SERVICES instead
+        of a short hardcoded subset, and only counts a service as
+        disabled if `systemctl disable` actually succeeded (most hosts
+        won't have all of these installed - that's normal, it just
+        shouldn't be silently reported as success).
+        """
+        services = _cfg('UNNECESSARY_SERVICES', ['cups', 'avahi-daemon', 'isc-dhcp-server', 'snmpd', 'rsync'])
+        disabled = []
         for service in services:
             try:
-                _exec(['systemctl', 'disable', service], capture_output=True)
+                result = _exec(['systemctl', 'disable', service], capture_output=True)
                 _exec(['systemctl', 'stop', service], capture_output=True)
-            except:
+                if result.returncode == 0:
+                    disabled.append(service)
+            except Exception:
                 pass
         
-        print(f"[+] Unnecessary Services Disabled: {len(services)}")
+        print(f"[+] Unnecessary Services Disabled: {len(disabled)}/{len(services)} ({', '.join(disabled) if disabled else 'none present'})")
     
     def harden_sudo(self):
         """Harden sudo configuration.
@@ -1078,10 +1120,11 @@ Protocol 2
         removed rather than left in place.
         """
         sudoers_path = '/etc/sudoers.d/99-cyberdefense-shield'
-        sudo_config = """# Managed by Cyber-Defense-Shield - do not edit by hand
+        passwd_tries = _cfg('SUDO_PASSWD_TRIES', 3)
+        sudo_config = f"""# Managed by Cyber-Defense-Shield - do not edit by hand
 Defaults use_pty
 Defaults logfile="/var/log/sudo.log"
-Defaults passwd_tries=3
+Defaults passwd_tries={passwd_tries}
 Defaults timestamp_timeout=5
 """
         try:
@@ -1791,7 +1834,13 @@ class MalwareDetector:
         self.suspicious_paths = ['/tmp', '/var/tmp', '/dev/shm']
     
     def scan_for_suspicious_files(self):
-        """Scan system for suspicious files"""
+        """Scan system for suspicious files.
+
+        Flags files that are world-writable (777) OR whose name ends in
+        one of self.suspicious_extensions. That list was defined in
+        __init__ since the first version but never actually checked
+        here - only the permission check ran.
+        """
         print("[*] Scanning for suspicious files...")
         
         suspicious_files = []
@@ -1803,11 +1852,17 @@ class MalwareDetector:
                     for file in os.listdir(path):
                         file_path = os.path.join(path, file)
                         if os.path.isfile(file_path):
+                            reasons = []
                             # Check file permissions
                             perms = oct(os.stat(file_path).st_mode)[-3:]
                             if perms == '777':
+                                reasons.append(f'permissions: {perms}')
+                            # Check for suspicious extensions
+                            if any(file.lower().endswith(ext) for ext in self.suspicious_extensions):
+                                reasons.append('suspicious extension')
+                            if reasons:
                                 suspicious_files.append(file_path)
-                                print(f"[!] SUSPICIOUS: {file_path} (permissions: {perms})")
+                                print(f"[!] SUSPICIOUS: {file_path} ({', '.join(reasons)})")
             except:
                 pass
         
@@ -2090,7 +2145,12 @@ class UserActivityAuditor:
             return ""
     
     def audit_privilege_escalation(self):
-        """Audit sudo privilege escalation"""
+        """Audit sudo privilege escalation.
+
+        The failed-attempts pattern is built from config.SUDO_PASSWD_TRIES
+        (the same setting harden_sudo() writes into passwd_tries=) instead
+        of a hardcoded '3', so the two can't silently drift apart.
+        """
         print("[*] Checking privilege escalation logs...")
         
         try:
@@ -2100,7 +2160,8 @@ class UserActivityAuditor:
             print(f"[+] Sudo Commands: {sudo_count}")
             
             # Check for failed sudo attempts
-            failed = result.stdout.count('sudo: 3 incorrect password attempts')
+            passwd_tries = _cfg('SUDO_PASSWD_TRIES', 3)
+            failed = result.stdout.count(f'sudo: {passwd_tries} incorrect password attempts')
             if failed > 0:
                 print(f"[!] ALERT: {failed} failed sudo attempts detected")
             

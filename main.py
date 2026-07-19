@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cyber-Defense-Shield v1.4
+Cyber-Defense-Shield v1.5
 Multi-Layered Security Tool for Linux Systems
 Main Application Controller
 """
@@ -36,7 +36,7 @@ from defense_modules import (
 
 
 class CyberDefenseShield:
-    """Main Application Class - Cyber-Defense-Shield v1.4"""
+    """Main Application Class - Cyber-Defense-Shield v1.5"""
     
     def __init__(self):
         """Initialize the application"""
@@ -61,7 +61,7 @@ class CyberDefenseShield:
         banner = """
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                                                                           ║
-║             🛡️  CYBER-DEFENSE-SHIELD v1.4 - Linux Security Tool 🛡️        ║
+║             🛡️  CYBER-DEFENSE-SHIELD v1.5 - Linux Security Tool 🛡️        ║
 ║                                                                           ║
 ║              Multi-Layered Cybersecurity Defense System                   ║
 ║                   Kali Linux / Debian-Based Linux                         ║
@@ -673,7 +673,10 @@ class CyberDefenseShield:
 def parse_args():
     """Parse command-line arguments for daemon mode."""
     parser = argparse.ArgumentParser(
-        description="Cyber-Defense-Shield v1.4 - Multi-Layered Cybersecurity Defense System"
+        description="Cyber-Defense-Shield v1.5 - Multi-Layered Cybersecurity Defense System"
+    )
+    parser.add_argument(
+        '--version', action='version', version='Cyber-Defense-Shield v1.5'
     )
     parser.add_argument(
         '--daemon', action='store_true',
@@ -719,6 +722,14 @@ def main():
                 interval = getattr(_cfg_mod, 'DAEMON_SCAN_INTERVAL_SECONDS', 300)
             except Exception:
                 interval = 300
+        elif interval < 10:
+            # config.validate_config() enforces this same >=10 floor for
+            # the config.py default, but a CLI --interval bypassed that
+            # check entirely - 0 or a negative value here means the sleep
+            # loop in run_daemon() never sleeps, hammering the system
+            # with back-to-back full scan cycles forever.
+            print(f"[!] --interval {interval} is too low (minimum 10s) - using 10s instead to avoid a busy-loop.")
+            interval = 10
         app.run_daemon(interval=interval)
     else:
         app.run()

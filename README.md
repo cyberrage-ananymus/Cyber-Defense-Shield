@@ -1,8 +1,8 @@
-# Cyber-Defense-Shield v1.4
+# Cyber-Defense-Shield v1.5
 
 Multi-Layered Security Tool for Linux Systems
 
-![Version](https://img.shields.io/badge/version-1.4-blue.svg)
+![Version](https://img.shields.io/badge/version-1.5-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 
@@ -98,28 +98,23 @@ Cyber-Defense-Shield is a practical, multi-layered defense tool for Linux system
 ## Installation
 
 ### Step 1: Clone Repository
-```
 git clone https://github.com/cyberrage-ananymus/Cyber-Defense-Shield.git
 cd Cyber-Defense-Shield
-```
+
 ### Step 2: Install Dependencies
-```
 sudo pip3 install -r requirements.txt
-```
+
 ### Step 3: Verify Installation
-```
 sudo python3 main.py --version
-```
+
 ### Step 4: Run the Tool
-```
 sudo python3 main.py
-```
+
 ## Usage
 
 ### Basic Execution
-```
 sudo python3 main.py
-```
+
 ### Menu System
 After running the tool, you'll see the main menu with 9 options:
 
@@ -597,6 +592,17 @@ For support and questions:
 
 ## Changelog
 
+### v1.5 (2026)
+- **Fixed a real data bug in `scan_open_ports`:** it read `parts[3]` from `ss -tunlp` output expecting an address, but `-tunlp` combines tcp+udp so ss prepends a Netid column - `parts[3]` was actually the Send-Q queue depth, not a port. Had no visible effect since only the list's length was ever used anywhere, but the data itself was meaningless. Verified the real column order against documented `-tulpn` output before fixing; now reads `parts[4]`
+- **Fixed the same "claims success without checking the result" bug already found and fixed in v1.4** (`check_cve_updates`, `enable_audit_logging`) - still present in five sibling methods: `enable_firewall`, `add_security_rules`, `close_dangerous_ports`, `SystemHardener.update_system`, and `disable_unnecessary_services`. None of them checked `returncode` before printing a fixed success message; all five now report what actually happened
+- **Fixed two more ignored-config gaps** (same class as the `TRAFFIC_ANOMALY_THRESHOLD_MBPS` gap closed in v1.4): `close_dangerous_ports` was closing a hardcoded 7-port list instead of the 18 ports in `config.DANGEROUS_PORTS`; `disable_unnecessary_services` was only touching a hardcoded 5-service list instead of the 10 in `config.UNNECESSARY_SERVICES`. Both now read from config
+- **Fixed a hardcoded-value drift risk:** `harden_sudo`'s `passwd_tries=3` and `audit_privilege_escalation`'s `"sudo: 3 incorrect password attempts"` search string were two independent hardcoded 3s with no shared source of truth - changing one without the other would silently break detection. Added `config.SUDO_PASSWD_TRIES`; both now read from it
+- **Wired up dead code:** `MalwareDetector.suspicious_extensions` was defined in `__init__` since v1.0 but never actually checked - `scan_for_suspicious_files` only ever looked at file permissions. It now also flags files by extension. Removed `_write_file()`, a module-level helper that was never called anywhere (`harden_ssh`/`harden_sudo` each implement their own atomic-write logic instead)
+- Marked `EMAIL_CONFIG`, `SLACK_CONFIG`, `DATABASE_CONFIG`, `PERFORMANCE`, `NOTIFICATIONS`, and `ALERT_THRESHOLDS` in config.py as reserved/not-yet-wired-up in a comment instead of leaving them silently unused - the only alert channels actually read by `AlertNotifier` are `TELEGRAM_CONFIG`/`DISCORD_CONFIG`
+- Added a real `--version` flag - the README documented `main.py --version` since earlier versions but argparse never actually defined it
+- `--interval` in `--daemon` mode is now floored at 10s, matching config.py's own validation rule for the same setting - an unvalidated `--interval 0` or negative value bypassed `DAEMON_SCAN_INTERVAL_SECONDS` validation entirely and left the sleep loop never actually sleeping
+- 12 more unit tests covering all of the above (ss column parsing, real-outcome reporting, config-driven port/service lists, the shared sudo-tries setting, extension-based file flagging) - 54 tests total
+
 ### v1.4 (2026)
 - Every capability the README previously described with no code behind it now has a real, tested implementation:
   - ICMP Flood Protection and IP Spoofing Protection (Option 3)
@@ -735,7 +741,7 @@ Special thanks to:
 
 ---
 
-Version: 1.4
+Version: 1.5
 Last Updated: 2026
 Status: Active Development & Maintenance
 Maintained By: Cyber-Rage Security Team

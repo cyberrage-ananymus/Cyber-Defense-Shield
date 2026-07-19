@@ -38,6 +38,16 @@ CLIENT_ALIVE_COUNT_MAX = 2
 SSH_PROTOCOL = 2
 
 # ============================================
+# SUDO HARDENING
+# ============================================
+# Used by SystemHardener.harden_sudo() when writing the sudoers drop-in
+# (Defaults passwd_tries=...) and by UserActivityAuditor.
+# audit_privilege_escalation() when building the log pattern it searches
+# for ("sudo: N incorrect password attempts"). Kept in one place so the
+# two stay in sync instead of drifting apart as two separate hardcoded 3s.
+SUDO_PASSWD_TRIES = 3
+
+# ============================================
 # MONITORING SETTINGS
 # ============================================
 MONITORING_INTERVAL = 5  # seconds
@@ -236,6 +246,17 @@ ATTACK_PATTERNS = {
 }
 
 # ============================================
+# RESERVED - NOT YET WIRED UP
+# ============================================
+# EMAIL_CONFIG, SLACK_CONFIG, DATABASE_CONFIG, PERFORMANCE, NOTIFICATIONS
+# and ALERT_THRESHOLDS below are configuration surface for integrations
+# that don't have an implementation yet - nothing in defense_modules.py
+# reads them. Left in place as a starting point for whoever builds those
+# next, not because they're currently active. The only alert channels
+# actually wired up today are TELEGRAM_CONFIG and DISCORD_CONFIG, via
+# AlertNotifier.
+
+# ============================================
 # EMAIL ALERT SETTINGS
 # ============================================
 EMAIL_CONFIG = {
@@ -432,6 +453,7 @@ def validate_config():
                  lambda v: all(isinstance(sigs, list) for sigs in v.values()))
     _expect_type('TELEGRAM_CONFIG', TELEGRAM_CONFIG, dict, lambda v: 'enabled' in v)
     _expect_type('DISCORD_CONFIG', DISCORD_CONFIG, dict, lambda v: 'enabled' in v)
+    _expect_type('SUDO_PASSWD_TRIES', SUDO_PASSWD_TRIES, int, lambda v: v > 0)
 
     if TELEGRAM_CONFIG.get('enabled') and not (TELEGRAM_CONFIG.get('bot_token') and TELEGRAM_CONFIG.get('chat_id')):
         problems.append("TELEGRAM_CONFIG['enabled'] is True but bot_token/chat_id are empty - set CDS_TELEGRAM_BOT_TOKEN / CDS_TELEGRAM_CHAT_ID")

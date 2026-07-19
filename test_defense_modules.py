@@ -581,5 +581,178 @@ class TestAlertCooldown(unittest.TestCase):
             self.assertEqual(mock_send.call_count, 2)
 
 
+class TestScanOpenPortsColumnParsing(unittest.TestCase):
+    """Regression test for a confirmed column-index bug: `ss -tunlp`
+    mixes tcp+udp, which adds a leading Netid column and shifts every
+    field right by one - the old code read parts[3] (Send-Q, a queue
+    depth) instead of parts[4] (Local Address:Port)."""
+
+    def test_extracts_local_address_not_send_queue_depth(self):
+        scanner = dm.SecurityScanner()
+        fake_output = (
+            "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
+            "tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=679,fd=3))\n"
+            "udp UNCONN 0 0 0.0.0.0:68 0.0.0.0:*\n"
+        )
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(stdout=fake_output)
+            ports = scanner.scan_open_ports()
+        self.assertIn('0.0.0.0:22', ports)
+        self.assertIn('0.0.0.0:68', ports)
+        # the old bug would have collected Send-Q values ('128', '0') here instead
+        self.assertNotIn('128', ports)
+
+
+class TestFirewallActionsReportRealOutcome(unittest.TestCase):
+    """Regression tests for FirewallManager methods that used to print a
+    fixed success message regardless of whether the underlying ufw
+    command actually succeeded."""
+
+    def setUp(self):
+        dm.set_dry_run(False)
+
+    def test_enable_firewall_reports_failure(self):
+        fw = dm.FirewallManager()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout=b'', stderr=b'ufw: not found')
+            with patch('builtins.print') as mock_print:
+                fw.enable_firewall()
+                printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn('[!]', printed)
+        self.assertNotIn('ENABLED', printed)
+
+    def test_enable_firewall_reports_success(self):
+        fw = dm.FirewallManager()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=b'', stderr=b'')
+            with patch('builtins.print') as mock_print:
+                fw.enable_firewall()
+                printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn('ENABLED', printed)
+
+    def test_add_security_rules_reports_actual_failures(self):
+        fw = dm.FirewallManager()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            with patch('builtins.print') as mock_print:
+                fw.add_security_rules()
+                printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn('0/5', printed)
+        self.assertIn('[!]', printed)
+
+    def test_close_dangerous_ports_reports_actual_failures(self):
+        fw = dm.FirewallManager()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            with patch('builtins.print') as mock_print:
+                fw.close_dangerous_ports()
+                printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn(f'0/{len(config.DANGEROUS_PORTS)}', printed)
+
+
+class TestDangerousPortsUsesConfig(unittest.TestCase):
+    """close_dangerous_ports must act on the full config.DANGEROUS_PORTS
+    list, not the old 7-port hardcoded subset that silently ignored the
+    other 11 configured ports."""
+
+    def test_closes_full_configured_port_list(self):
+        fw = dm.FirewallManager()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            fw.close_dangerous_ports()
+        called_ports = {c.args[0][2] for c in mock_run.call_args_list}
+        self.assertEqual(called_ports, {str(p) for p in config.DANGEROUS_PORTS})
+
+
+class TestSystemHardenerReportsRealOutcome(unittest.TestCase):
+    """update_system and disable_unnecessary_services must not claim
+    success when the underlying commands failed, and
+    disable_unnecessary_services must use config.UNNECESSARY_SERVICES."""
+
+    def setUp(self):
+        dm.set_dry_run(False)
+
+    def test_update_system_reports_failure(self):
+        hardener = dm.SystemHardener()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout='', stderr='Unable to fetch')
+            with patch('builtins.print') as mock_print:
+                hardener.update_system()
+                printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn('[!]', printed)
+        self.assertNotIn('COMPLETE', printed)
+
+    def test_update_system_reports_success(self):
+        hardener = dm.SystemHardener()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            with patch('builtins.print') as mock_print:
+                hardener.update_system()
+                printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn('COMPLETE', printed)
+
+    def test_disable_services_uses_full_config_list(self):
+        hardener = dm.SystemHardener()
+        with patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            hardener.disable_unnecessary_services()
+        disable_calls = [c for c in mock_run.call_args_list if c.args[0][1] == 'disable']
+        touched = {c.args[0][2] for c in disable_calls}
+        self.assertEqual(touched, set(config.UNNECESSARY_SERVICES))
+
+
+class TestSudoPasswdTriesConsistency(unittest.TestCase):
+    """harden_sudo's generated sudoers content and
+    audit_privilege_escalation's log-search pattern must both derive
+    from config.SUDO_PASSWD_TRIES instead of two independent hardcoded
+    3s that could silently drift apart."""
+
+    def test_harden_sudo_dry_run_uses_configured_value(self):
+        hardener = dm.SystemHardener()
+        dm.set_dry_run(True)
+        try:
+            with patch.object(config, 'SUDO_PASSWD_TRIES', 5), \
+                 patch('os.path.exists', return_value=False), \
+                 patch('defense_modules.subprocess.run') as mock_run, \
+                 patch('builtins.print') as mock_print:
+                mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+                hardener.harden_sudo()
+                printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        finally:
+            dm.set_dry_run(False)
+        self.assertIn('passwd_tries=5', printed)
+
+    def test_audit_searches_for_configured_value(self):
+        auditor = dm.UserActivityAuditor()
+        with patch.object(config, 'SUDO_PASSWD_TRIES', 5), \
+             patch('defense_modules.subprocess.run') as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout='sudo: 5 incorrect password attempts\n' * 2
+            )
+            with patch('builtins.print') as mock_print:
+                auditor.audit_privilege_escalation()
+                printed = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn('2 failed sudo attempts', printed)
+
+
+class TestSuspiciousExtensionsDetection(unittest.TestCase):
+    """scan_for_suspicious_files must actually check
+    self.suspicious_extensions - that list was defined in __init__ since
+    the first version but never checked, only file permissions were."""
+
+    def test_flags_file_by_extension_even_with_safe_permissions(self):
+        detector = dm.MalwareDetector()
+        detector.suspicious_paths = ['/tmp/_cds_test_dir']
+        with patch('os.path.exists', return_value=True), \
+             patch('os.listdir', return_value=['dropper.exe', 'notes.txt']), \
+             patch('os.path.isfile', return_value=True), \
+             patch('os.stat') as mock_stat:
+            mock_stat.return_value = MagicMock(st_mode=0o100644)  # 644, not 777
+            findings = detector.scan_for_suspicious_files()
+        self.assertTrue(any('dropper.exe' in f for f in findings))
+        self.assertFalse(any('notes.txt' in f for f in findings))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
